@@ -87,6 +87,15 @@ button:hover {
     border-radius: 6px;
     background: #fafafa;
 }
+.match-thumb {
+    width: 56px;
+    height: 56px;
+    object-fit: contain;
+    display: block;
+    margin: 0 0 8px;
+    border-radius: 6px;
+    background: #fafafa;
+}
 .product-name { font-weight: bold; margin: 0 0 10px 0; }
 .status-text { color: #666; }
 .price-tag { font-size: 1.4rem; color: #222; margin: 0; }
@@ -184,6 +193,19 @@ button:hover {
     padding: 16px;
     background: #eff6ff;
     border-radius: 8px;
+}
+
+.disclaimer-footer {
+    margin: 20px 0 24px;
+    padding: 12px 16px;
+    text-align: left;
+}
+
+.disclaimer-footer p {
+    margin: 0;
+    color: #6b7280;
+    font-size: 0.82rem;
+    line-height: 1.5;
 }
 
 @media (max-width: 900px) {

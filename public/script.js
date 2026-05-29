@@ -1,9 +1,7 @@
 let itemsInList = [];
 
 const API_BASE = 'http://localhost:3000';
-
-const WOOLWORTHS_UNAVAILABLE_MSG =
-  'Woolworths API is not connected yet. Only Coles results are shown.';
+const FALLBACK_IMAGE_URL = 'https://placehold.co/150?text=No+Image';
 
 async function searchProducts() {
   const keyword = document.getElementById('itemInput').value.trim();
@@ -37,13 +35,15 @@ async function searchProducts() {
     }
 
     const items = Array.isArray(data) ? data : data.items || [];
+    const similarPairs = Array.isArray(data?.similarPairs) ? data.similarPairs : [];
     const woolworths = items.filter((item) => item.supermarket === 'Woolworths');
     const coles = items.filter((item) => item.supermarket === 'Coles');
 
-    renderWoolworthsColumn(wooliesCont, woolworths);
-    renderStoreResults(colesCont, coles, 'Coles');
+    renderStoreResults(wooliesCont, woolworths, 'Woolworths', data.storeErrors?.woolworths);
+    renderStoreResults(colesCont, coles, 'Coles', data.storeErrors?.coles);
     renderSummary(summaryText, summarySection, woolworths, coles);
-    renderMatchedPairs(matchedResults, matchedSection, woolworths, coles);
+    // Similar products lấy từ backend (đã ghép cặp bằng string-similarity > 55%)
+    renderMatchedPairs(matchedResults, matchedSection, similarPairs);
   } catch (err) {
     const message = err.message || 'Could not load results.';
     wooliesCont.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
@@ -51,15 +51,6 @@ async function searchProducts() {
   } finally {
     searchBtn.disabled = false;
   }
-}
-
-function renderWoolworthsColumn(container, products) {
-  container.innerHTML = '';
-  if (!products.length) {
-    container.innerHTML = `<p class="status-text">${WOOLWORTHS_UNAVAILABLE_MSG}</p>`;
-    return;
-  }
-  renderStoreResults(container, products, 'Woolworths');
 }
 
 function renderSummary(el, section, woolworths, coles) {
@@ -93,20 +84,14 @@ function renderSummary(el, section, woolworths, coles) {
       text += 'Both stores have the same lowest price.';
     }
   } else if (colesMin != null && !woolworths.length) {
-    text += 'Woolworths comparison is unavailable until its API is connected.';
+    text += 'Woolworths results are unavailable for this search.';
   }
 
   el.innerHTML = text;
   section.classList.remove('hidden');
 }
 
-function renderMatchedPairs(container, section, woolworths, coles) {
-  if (!woolworths.length || !coles.length) {
-    section.classList.add('hidden');
-    return;
-  }
-
-  const pairs = buildSimplePairs(woolworths, coles);
+function renderMatchedPairs(container, section, pairs) {
   if (!pairs.length) {
     section.classList.add('hidden');
     return;
@@ -127,12 +112,14 @@ function renderMatchedPairs(container, section, woolworths, coles) {
     row.innerHTML = `
       <div class="match-side">
         <p class="store-label woolies">Woolworths</p>
+        ${buildSafeImageTag(pair.woolworths.image, 'Woolworths product image', 'match-thumb')}
         <p class="product-name">${escapeHtml(pair.woolworths.name)}</p>
         <p class="price-tag">$${pair.woolworths.price.toFixed(2)}</p>
       </div>
       <div class="match-vs">vs</div>
       <div class="match-side">
         <p class="store-label coles">Coles</p>
+        ${buildSafeImageTag(pair.coles.image, 'Coles product image', 'match-thumb')}
         <p class="product-name">${escapeHtml(pair.coles.name)}</p>
         <p class="price-tag">$${pair.coles.price.toFixed(2)}</p>
       </div>
@@ -144,65 +131,14 @@ function renderMatchedPairs(container, section, woolworths, coles) {
   section.classList.remove('hidden');
 }
 
-function buildSimplePairs(woolworths, coles) {
-  const pairs = [];
-  const usedColes = new Set();
-
-  for (const wItem of woolworths.slice(0, 6)) {
-    let bestIndex = -1;
-    let bestScore = 0;
-
-    coles.forEach((cItem, index) => {
-      if (usedColes.has(index)) return;
-      const score = nameSimilarity(wItem.name, cItem.name);
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = index;
-      }
-    });
-
-    if (bestIndex < 0 || bestScore < 0.35) continue;
-    usedColes.add(bestIndex);
-
-    const cItem = coles[bestIndex];
-    const saving = Math.abs(wItem.price - cItem.price);
-    let cheaper = 'tie';
-    if (wItem.price < cItem.price) cheaper = 'Woolworths';
-    else if (cItem.price < wItem.price) cheaper = 'Coles';
-
-    pairs.push({ woolworths: wItem, coles: cItem, cheaper, saving });
-  }
-
-  return pairs;
-}
-
-function nameSimilarity(a, b) {
-  const ta = new Set(
-    String(a)
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2)
-  );
-  const tb = new Set(
-    String(b)
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2)
-  );
-  if (!ta.size || !tb.size) return 0;
-  let overlap = 0;
-  for (const t of ta) {
-    if (tb.has(t)) overlap += 1;
-  }
-  return overlap / Math.max(ta.size, tb.size);
-}
-
-function renderStoreResults(container, products, storeName) {
+function renderStoreResults(container, products, storeName, storeError = '') {
   container.innerHTML = '';
 
   if (!products?.length) {
+    if (storeError) {
+      container.innerHTML = `<p class="error">${escapeHtml(storeError)}</p>`;
+      return;
+    }
     container.innerHTML = `<p class="error">No results at ${storeName}.</p>`;
     return;
   }
@@ -215,9 +151,12 @@ function renderStoreResults(container, products, storeName) {
     const isCheapest = item.price === cheapest;
     card.className = `product-card${isCheapest ? ' cheapest' : ''}`;
 
-    const imageHtml = item.image
-      ? `<img src="${escapeHtml(item.image)}" alt="" class="product-thumb" loading="lazy" />`
-      : '';
+    // Ảnh sản phẩm luôn có fallback + no-referrer để giảm lỗi hotlinking
+    const imageHtml = buildSafeImageTag(
+      item.image,
+      `${storeName} product image`,
+      'product-thumb'
+    );
 
     card.innerHTML = `
       ${imageHtml}
@@ -233,6 +172,15 @@ function renderStoreResults(container, products, storeName) {
 
     container.appendChild(card);
   });
+}
+
+// Tạo thẻ <img> an toàn:
+// - referrerpolicy="no-referrer": hạn chế lỗi chặn hotlink ảnh
+// - onerror fallback: nếu ảnh lỗi/chặn thì đổi sang ảnh mặc định
+function buildSafeImageTag(imageUrl, altText, className) {
+  const src = imageUrl ? escapeHtml(imageUrl) : FALLBACK_IMAGE_URL;
+  const safeAlt = escapeHtml(altText || 'Product image');
+  return `<img src="${src}" alt="${safeAlt}" class="${className}" loading="lazy" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='${FALLBACK_IMAGE_URL}';" />`;
 }
 
 function escapeHtml(text) {
