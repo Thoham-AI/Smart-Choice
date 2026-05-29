@@ -113,17 +113,47 @@ function normalizeItem(raw, supermarket) {
     raw.product_title ||
     null;
 
-  // Giá: thử nhiều field phổ biến từ Dromb / RapidAPI
-  const price =
-    parsePrice(raw.price) ??
-    parsePrice(raw.discount_price) ??
-    parsePrice(raw.current_price) ??
-    parsePrice(raw.sale_price) ??
-    parsePrice(raw.selling_price) ??
-    parsePrice(raw.final_price) ??
-    parsePrice(raw.unit_price);
+  const listedPrice = parsePrice(raw.price) ?? parsePrice(raw.current_price);
+  const discountPrice = parsePrice(raw.discount_price) ?? parsePrice(raw.sale_price);
+  const wasPrice =
+    parsePrice(raw.was_price) ??
+    parsePrice(raw.original_price) ??
+    parsePrice(raw.list_price) ??
+    parsePrice(raw.regular_price);
 
-  // Ảnh: thử nhiều tên field
+  // Giá hiển thị: ưu tiên giá khuyến mãi nếu thấp hơn giá gốc
+  let price = listedPrice ?? discountPrice ?? parsePrice(raw.selling_price) ?? parsePrice(raw.final_price);
+  let originalPrice = null;
+  let isOnSpecial =
+    raw.is_on_special === true ||
+    raw.on_special === true ||
+    raw.isSpecial === true ||
+    raw.special === true;
+
+  if (discountPrice != null && listedPrice != null && discountPrice < listedPrice) {
+    price = discountPrice;
+    originalPrice = listedPrice;
+    isOnSpecial = true;
+  } else if (wasPrice != null && price != null && wasPrice > price) {
+    originalPrice = wasPrice;
+    isOnSpecial = true;
+  } else if (isOnSpecial && wasPrice != null && price != null && wasPrice > price) {
+    originalPrice = wasPrice;
+  }
+
+  const saveAmount =
+    originalPrice != null && price != null && originalPrice > price
+      ? Number((originalPrice - price).toFixed(2))
+      : null;
+
+  const url =
+    raw.url ||
+    raw.product_url ||
+    raw.productUrl ||
+    raw.link ||
+    raw.product_link ||
+    '';
+
   const image =
     raw.image ||
     raw.image_url ||
@@ -132,13 +162,16 @@ function normalizeItem(raw, supermarket) {
     raw.img ||
     '';
 
-  // Bỏ qua sản phẩm không có tên hoặc không parse được giá
   if (!name || price == null) return null;
 
   return {
     supermarket,
-    name:  String(name).trim(),
+    name: String(name).trim(),
     price,
+    originalPrice,
+    isOnSpecial: Boolean(isOnSpecial || saveAmount),
+    saveAmount,
+    url: String(url).trim(),
     image: String(image),
   };
 }
