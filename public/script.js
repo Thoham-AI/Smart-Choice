@@ -311,7 +311,16 @@ function buildLinkedImage(item, className = 'match-thumb') {
 function buildPriceBlock(item) {
   const specialTag = buildSpecialTag(item);
   const priceHtml = `<span class="price-tag">$${item.price.toFixed(2)}</span>`;
-  return `<div class="price-row">${priceHtml}${specialTag}</div>`;
+  const unitHtml = item.unit_price_text
+    ? `<p class="unit-price-text">${escapeHtml(item.unit_price_text)}</p>`
+    : '';
+
+  return `
+    <div class="price-block">
+      <div class="price-row">${priceHtml}${specialTag}</div>
+      ${unitHtml}
+    </div>
+  `;
 }
 
 /** Tag SPECIAL hoặc SAVE $X khi sản phẩm đang giảm giá */
@@ -344,4 +353,175 @@ document.getElementById('itemInput').addEventListener('keydown', (e) => {
 
 document.getElementById('clear-cart')?.addEventListener('click', clearCart);
 
+document.getElementById('analyzeListBtn')?.addEventListener('click', analyzeShoppingList);
+
 renderCartPanel();
+
+// --- AI Shopping List ---
+
+async function analyzeShoppingList() {
+  const textarea = document.getElementById('aiListInput');
+  const btn = document.getElementById('analyzeListBtn');
+  const section = document.getElementById('ai-results-section');
+  const prompt = textarea?.value.trim();
+
+  if (!prompt) {
+    return alert('Enter your shopping list (e.g. 2 kg rice, 1 L milk).');
+  }
+
+  btn.disabled = true;
+  section.classList.remove('hidden');
+  section.querySelector('#ai-parse-info').innerHTML = '<p class="loading">Analyzing with AI and fetching prices...</p>';
+  section.querySelector('#ai-totals-grid').innerHTML = '';
+  section.querySelector('#ai-savings-banner').textContent = '';
+  section.querySelector('#ai-split-details').innerHTML = '';
+  section.querySelector('#ai-line-items').innerHTML = '';
+
+  try {
+    const response = await fetch(`${API_BASE}/api/analyze-prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Could not analyze list.');
+    }
+
+    renderAiShoppingResults(data);
+  } catch (err) {
+    section.querySelector('#ai-parse-info').innerHTML = `<p class="error">${escapeHtml(err.message || 'Analysis failed.')}</p>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderAiShoppingResults(data) {
+  const { parsedItems, lineItems, optimization, parseSource } = data;
+  const opt = optimization || {};
+
+  document.getElementById('ai-parse-info').innerHTML = `
+    <p>Detected <strong>${parsedItems.length}</strong> items
+    ${parseSource === 'openai' ? '(via AI)' : '(via local parser)'}:</p>
+    <ul class="ai-parsed-list">
+      ${parsedItems
+        .map(
+          (item) =>
+            `<li>${escapeHtml(item.keyword)} — ${item.quantity} ${escapeHtml(item.unit)}</li>`
+        )
+        .join('')}
+    </ul>
+  `;
+
+  document.getElementById('ai-totals-grid').innerHTML = `
+    <div class="ai-total-card">
+      <h3>All at Coles</h3>
+      <p class="amount">$${(opt.colesOnlyTotal || 0).toFixed(2)}</p>
+    </div>
+    <div class="ai-total-card">
+      <h3>All at Woolworths</h3>
+      <p class="amount">$${(opt.woolworthsOnlyTotal || 0).toFixed(2)}</p>
+    </div>
+    <div class="ai-total-card highlight">
+      <h3>Split cart (best)</h3>
+      <p class="amount">$${(opt.splitTotal || 0).toFixed(2)}</p>
+    </div>
+  `;
+
+  const savingsEl = document.getElementById('ai-savings-banner');
+  if (opt.savings?.amount > 0) {
+    savingsEl.innerHTML = `Split cart saves <strong>$${opt.savings.amount.toFixed(2)}</strong> (<strong>${opt.savings.percent}%</strong>) compared to buying everything at ${escapeHtml(opt.savings.comparedTo || 'one store')}.`;
+  } else if (opt.splitTotal > 0) {
+    savingsEl.textContent =
+      'Split cart matches the cheapest single-store total for this list.';
+  } else {
+    savingsEl.textContent = 'No matching products found. Try different keywords.';
+  }
+
+  renderAiSplitCart(opt.splitCart);
+  renderAiLineItems(lineItems);
+}
+
+function renderAiSplitCart(splitCart) {
+  const container = document.getElementById('ai-split-details');
+  if (!splitCart) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = `
+    <h3>Where to shop (split cart)</h3>
+    <div class="ai-split-columns">
+      <div class="ai-split-col coles">
+        <h3>Buy at Coles</h3>
+        ${renderSplitItems(splitCart.coles, 'Coles')}
+      </div>
+      <div class="ai-split-col woolies">
+        <h3>Buy at Woolworths</h3>
+        ${renderSplitItems(splitCart.woolworths, 'Woolworths')}
+      </div>
+    </div>
+  `;
+}
+
+function renderSplitItems(items, storeLabel) {
+  if (!items?.length) {
+    return `<p class="missing">No items assigned to ${storeLabel}.</p>`;
+  }
+
+  return items
+    .map(
+      (entry) => `
+    <div class="ai-split-item">
+      <p class="request-label">${escapeHtml(entry.request.keyword)} (${entry.request.quantity} ${escapeHtml(entry.request.unit)})</p>
+      <p class="product-title">${escapeHtml(entry.product?.name || '—')}</p>
+      <p>$${entry.lineTotal.toFixed(2)}</p>
+    </div>
+  `
+    )
+    .join('');
+}
+
+function renderAiLineItems(lineItems) {
+  const container = document.getElementById('ai-line-items');
+  if (!lineItems?.length) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = '<h3>Item-by-item comparison</h3>';
+
+  lineItems.forEach((line) => {
+    const row = document.createElement('div');
+    row.className = 'ai-line-row';
+
+    const colesClass =
+      line.chosenStore === 'Coles' ? 'pick' : line.coles ? '' : 'missing';
+    const woolClass =
+      line.chosenStore === 'Woolworths' ? 'pick' : line.woolworths ? '' : 'missing';
+
+    row.innerHTML = `
+      <p class="line-header">${escapeHtml(line.request.keyword)} — ${line.request.quantity} ${escapeHtml(line.request.unit)}</p>
+      <div class="ai-line-stores">
+        <div class="${colesClass}">
+          <strong>Coles</strong>
+          ${
+            line.coles
+              ? `<p>${escapeHtml(line.coles.name)}</p><p>$${line.colesLinePrice.toFixed(2)}</p>`
+              : '<p class="missing">No match</p>'
+          }
+        </div>
+        <div class="${woolClass}">
+          <strong>Woolworths</strong>
+          ${
+            line.woolworths
+              ? `<p>${escapeHtml(line.woolworths.name)}</p><p>$${line.woolworthsLinePrice.toFixed(2)}</p>`
+              : '<p class="missing">No match</p>'
+          }
+        </div>
+      </div>
+    `;
+    container.appendChild(row);
+  });
+}

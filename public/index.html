@@ -23,6 +23,27 @@
             </div>
         </section>
 
+        <section class="ai-list-section">
+            <h2>AI Shopping List</h2>
+            <p class="ai-list-hint">Describe your groceries in plain English. We will find the best prices at Coles and Woolworths.</p>
+            <textarea
+                id="aiListInput"
+                class="ai-list-textarea"
+                rows="5"
+                placeholder="e.g. 2 kg rice, 1 kg belly pork, 2L milk, 6 eggs"
+            ></textarea>
+            <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List bằng AI</button>
+        </section>
+
+        <section id="ai-results-section" class="ai-results-section hidden">
+            <h2>Smart cart breakdown</h2>
+            <div id="ai-parse-info" class="ai-parse-info"></div>
+            <div id="ai-totals-grid" class="ai-totals-grid"></div>
+            <p id="ai-savings-banner" class="ai-savings-banner"></p>
+            <div id="ai-split-details" class="ai-split-details"></div>
+            <div id="ai-line-items" class="ai-line-items"></div>
+        </section>
+
         <section id="summary-section" class="summary-section hidden">
             <h2>Price summary</h2>
             <p id="summary-text"></p>
@@ -70,6 +91,6 @@
         </footer>
     </div>
 
-    <script src="script.js?v=9"></script>
+    <script src="script.js?v=11"></script>
 </body>
 </html>
