@@ -1,7 +1,8 @@
 /**
- * SmartChoice – Barcode scanner via camera (html5-qrcode CDN)
- * - 📷 opens modal, uses rear camera (environment) on mobile
- * - Reads EAN/UPC/CODE128 → calls searchByBarcode() → closes camera
+ * SmartChoice – Quét mã vạch (html5-qrcode CDN)
+ * - Ưu tiên camera sau trên điện thoại (facingMode: environment)
+ * - Fallback nhiều bước nếu thiết bị không hỗ trợ { exact: "environment" }
+ * - Bắt lỗi từ chối quyền camera và hiển thị thông báo tiếng Việt
  */
 
 (function initBarcodeScanner() {
@@ -12,10 +13,13 @@
   const closeBtn = document.getElementById('scanner-close-btn');
   const backdrop = document.getElementById('scanner-backdrop');
 
+  const PERMISSION_ALERT_VI =
+    'Ứng dụng cần quyền truy cập Camera để quét mã vạch. Vui lòng kiểm tra lại cài đặt trình duyệt của bạn nhé!';
+
   if (!modal || !readerEl || typeof Html5Qrcode === 'undefined') {
     if (openBtn) {
       openBtn.addEventListener('click', () => {
-        alert('Barcode scanner library failed to load. Check your internet connection.');
+        alert('Không tải được thư viện quét mã. Kiểm tra kết nối mạng và tải lại trang.');
       });
     }
     return;
@@ -24,8 +28,13 @@
   let html5QrCode = null;
   let isScanning = false;
   let scanLocked = false;
+  let startInProgress = false;
 
-  /** Barcode formats common at Coles / Woolworths */
+  const isMobile =
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.maxTouchPoints > 1 && window.matchMedia('(max-width: 768px)').matches);
+
+  /** Định dạng mã vạch phổ biến tại Coles / Woolworths */
   const barcodeFormats = [
     Html5QrcodeSupportedFormats.EAN_13,
     Html5QrcodeSupportedFormats.EAN_8,
@@ -41,11 +50,22 @@
     statusEl.classList.toggle('error', isError);
   }
 
+  /** Đợi modal hiển thị xong (quan trọng trên iOS Safari / Chrome Android) */
+  function waitForModalLayout() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(resolve, isMobile ? 120 : 50);
+        });
+      });
+    });
+  }
+
   function openModal() {
     modal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     scanLocked = false;
-    setStatus('Point your camera at the product barcode');
+    setStatus('Đang mở camera…');
     startScanner();
   }
 
@@ -55,64 +75,228 @@
     stopScanner();
   }
 
-  /** Stop camera and release resources */
-  async function stopScanner() {
-    if (!html5QrCode || !isScanning) return;
+  /**
+   * Dừng camera và giải phóng tài nguyên.
+   * @param {boolean} resetInstance – tạo lại instance Html5Qrcode cho lần mở sau
+   */
+  async function stopScanner(resetInstance = false) {
+    if (html5QrCode && isScanning) {
+      try {
+        await html5QrCode.stop();
+      } catch {
+        /* có thể đã dừng */
+      }
+    }
 
-    try {
-      await html5QrCode.stop();
-      await html5QrCode.clear();
-    } catch {
-      /* ignore – may already be stopped */
+    if (html5QrCode) {
+      try {
+        await html5QrCode.clear();
+      } catch {
+        /* ignore */
+      }
     }
 
     isScanning = false;
+
+    if (resetInstance) {
+      html5QrCode = null;
+    }
   }
 
-  /** Start camera – prefer rear camera on phones */
-  async function startScanner() {
-    await stopScanner();
+  /** Tạo (hoặc tạo lại) đối tượng Html5Qrcode sau khi clear vùng đọc */
+  function createReaderInstance() {
     readerEl.innerHTML = '';
-
     html5QrCode = new Html5Qrcode('barcode-reader', {
       formatsToSupport: barcodeFormats,
       verbose: false,
     });
+  }
 
+  /**
+   * Cấu hình khung quét – mobile không ép aspectRatio (tránh màn hình đen trên một số máy).
+   */
+  function buildScanConfig() {
     const config = {
-      fps: 12,
-      aspectRatio: 1.777778,
+      fps: isMobile ? 10 : 12,
       disableFlip: false,
       experimentalFeatures: {
         useBarCodeDetectorIfSupported: true,
       },
       qrbox: (viewfinderWidth, viewfinderHeight) => {
-        const width = Math.floor(Math.min(viewfinderWidth * 0.92, 320));
-        const height = Math.floor(Math.min(viewfinderHeight * 0.38, 140));
-        return { width, height };
+        const width = Math.floor(Math.min(viewfinderWidth * 0.92, 340));
+        const height = Math.floor(Math.min(viewfinderHeight * 0.42, isMobile ? 160 : 140));
+        return { width: Math.max(width, 200), height: Math.max(height, 80) };
       },
     };
 
-    const cameraConfig = { facingMode: 'environment' };
+    if (!isMobile) {
+      config.aspectRatio = 1.777778;
+    }
+
+    return config;
+  }
+
+  /**
+   * Danh sách cấu hình camera theo thứ tự ưu tiên:
+   * 1) Ép camera sau (exact environment)
+   * 2) environment thường
+   * 3) ideal environment
+   * 4) deviceId camera sau (từ getCameras)
+   * 5) camera đầu tiên trong danh sách
+   */
+  async function buildCameraStartAttempts() {
+    const attempts = [];
+
+    attempts.push({
+      id: 'exact-environment',
+      getConfig: () => ({ facingMode: { exact: 'environment' } }),
+    });
+
+    attempts.push({
+      id: 'environment',
+      getConfig: () => ({ facingMode: 'environment' }),
+    });
+
+    attempts.push({
+      id: 'ideal-environment',
+      getConfig: () => ({ facingMode: { ideal: 'environment' } }),
+    });
+
+    attempts.push({
+      id: 'device-back',
+      getConfig: async () => {
+        const deviceId = await pickBackCameraDeviceId();
+        if (!deviceId) throw new Error('Không tìm thấy camera sau trong danh sách thiết bị.');
+        return deviceId;
+      },
+    });
+
+    attempts.push({
+      id: 'device-first',
+      getConfig: async () => {
+        const cameras = await Html5Qrcode.getCameras();
+        if (!cameras?.length) {
+          throw new Error('Không có camera trên thiết bị.');
+        }
+        return cameras[0].id;
+      },
+    });
+
+    return attempts;
+  }
+
+  /**
+   * Chọn deviceId camera sau khi đã có quyền (nhãn Back/Rear hoặc camera cuối danh sách trên Android).
+   */
+  async function pickBackCameraDeviceId() {
+    const cameras = await Html5Qrcode.getCameras();
+    if (!cameras?.length) return null;
+
+    const backByLabel = cameras.find((cam) => {
+      const label = String(cam.label || '').toLowerCase();
+      return (
+        /back|rear|environment|sau|wide/.test(label) &&
+        !/front|user|selfie|trước/.test(label)
+      );
+    });
+    if (backByLabel) return backByLabel.id;
+
+    if (cameras.length > 1) {
+      return cameras[cameras.length - 1].id;
+    }
+
+    return cameras[0].id;
+  }
+
+  /** Lỗi do người dùng từ chối quyền camera */
+  function isCameraPermissionDenied(error) {
+    const name = error?.name || '';
+    const message = String(error?.message || error || '').toLowerCase();
+
+    return (
+      name === 'NotAllowedError' ||
+      name === 'PermissionDeniedError' ||
+      name === 'SecurityError' ||
+      message.includes('permission denied') ||
+      message.includes('permission dismissed') ||
+      message.includes('not allowed') ||
+      message.includes('access denied') ||
+      message.includes('notallowed')
+    );
+  }
+
+  /** Hiển thị thông báo lỗi camera phù hợp */
+  function handleCameraStartError(error) {
+    console.error('Scanner start error:', error);
+
+    if (isCameraPermissionDenied(error)) {
+      alert(PERMISSION_ALERT_VI);
+      setStatus('Cần quyền Camera để quét mã vạch.', true);
+      return;
+    }
+
+    const message = String(error?.message || error || '');
+    if (/not found|no camera|devices/i.test(message)) {
+      setStatus('Không tìm thấy camera trên thiết bị này.', true);
+      return;
+    }
+
+    setStatus(
+      'Không mở được camera. Thử tải lại trang hoặc tìm sản phẩm bằng tên.',
+      true
+    );
+  }
+
+  /**
+   * Gọi html5QrCode.start với một cấu hình camera (object facingMode hoặc deviceId).
+   */
+  async function startWithCameraConfig(cameraIdOrConfig, scanConfig) {
+    await html5QrCode.start(cameraIdOrConfig, scanConfig, onScanSuccess, () => {});
+    isScanning = true;
+  }
+
+  /**
+   * Khởi động camera: thử lần lượt các fallback cho đến khi thành công.
+   */
+  async function startScanner() {
+    if (startInProgress) return;
+    startInProgress = true;
 
     try {
-      await html5QrCode.start(
-        cameraConfig,
-        config,
-        onScanSuccess,
-        () => {}
-      );
-      isScanning = true;
-    } catch (err) {
-      setStatus(
-        'Could not open camera. Allow camera permission or use manual search.',
-        true
-      );
-      console.error('Scanner start error:', err);
+      await stopScanner(true);
+      await waitForModalLayout();
+
+      createReaderInstance();
+      const scanConfig = buildScanConfig();
+      const attempts = await buildCameraStartAttempts();
+
+      let lastError = null;
+
+      for (const attempt of attempts) {
+        try {
+          const cameraConfig =
+            typeof attempt.getConfig === 'function'
+              ? await attempt.getConfig()
+              : attempt.getConfig;
+
+          await startWithCameraConfig(cameraConfig, scanConfig);
+          setStatus('Đưa camera vào mã vạch trên bao bì sản phẩm');
+          return;
+        } catch (err) {
+          lastError = err;
+          console.warn(`Camera attempt "${attempt.id}" failed:`, err?.message || err);
+          await stopScanner(false);
+          createReaderInstance();
+        }
+      }
+
+      handleCameraStartError(lastError);
+    } finally {
+      startInProgress = false;
     }
   }
 
-  /** On successful scan: debounce, stop camera, search by barcode */
+  /** Khi quét thành công: khóa trùng, tắt camera, gọi API so giá */
   async function onScanSuccess(decodedText) {
     if (scanLocked) return;
 
@@ -120,9 +304,9 @@
     if (barcode.length < 8) return;
 
     scanLocked = true;
-    setStatus(`Barcode detected: ${barcode}`);
+    setStatus(`Đã đọc mã: ${barcode}`);
 
-    await stopScanner();
+    await stopScanner(true);
     closeModal();
 
     if (typeof searchByBarcode === 'function') {

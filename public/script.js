@@ -1,4 +1,8 @@
-const API_BASE = 'http://localhost:3000';
+/** Cùng domain khi deploy (Vercel/điện thoại); localhost khi mở file trực tiếp */
+const API_BASE =
+  typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : 'http://localhost:3000';
 const FALLBACK_IMAGE_URL = 'https://placehold.co/150?text=No+Image';
 const CART_STORAGE_KEY = 'smartchoice_cart';
 const WATCHLIST_STORAGE_KEY = 'smartchoice_watchlist';

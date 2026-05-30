@@ -879,15 +879,20 @@ body {
 
 .barcode-reader {
     width: 100%;
-    min-height: 220px;
+    min-height: min(52vh, 360px);
     border-radius: 10px;
     overflow: hidden;
     background: #111827;
+    position: relative;
 }
 
 .barcode-reader video {
+    width: 100% !important;
+    height: auto !important;
+    min-height: min(48vh, 320px);
     border-radius: 10px;
     object-fit: cover;
+    display: block;
 }
 
 .scanner-status {
