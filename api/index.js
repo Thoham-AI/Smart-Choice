@@ -2097,7 +2097,4 @@ app.get('/health', (_req, res) => {
 // ============================================================
 // 8. KHỞI ĐỘNG SERVER
 // ============================================================
-app.listen(PORT, () => {
-  console.log(`\n🚀 SmartChoice running at http://localhost:${PORT}`);
-  console.log(`   Test: http://localhost:${PORT}/api/compare?keyword=milk\n`);
-});
+module.exports = app;
