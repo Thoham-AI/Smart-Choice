@@ -1332,10 +1332,26 @@ function haystackSuggestsMeatSeafood(haystack) {
   return /\b(meat|seafood|poultry|butcher|deli meat|fish)\b/i.test(haystack);
 }
 
+/** Kẹo/snack/rượu – tên có "watermelon" nhưng không phải quả tươi. */
+function nameSuggestsNonFreshProduceSnack(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  return /\b(sour|lollies|lolly|candy|chocolate|chips|crisps|snack|muesli|gin|vodka|beer|wine|liqueur|cordial concentrate)\b/.test(
+    nameNorm
+  );
+}
+
+/** Từ khóa đồ uống trong tên (không gọi looksLikeLooseFreshProduceName – tránh đệ quy). */
+function hasPackagedDrinkKeywords(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  return /\b(juice|cordial|soft drink|soda|cola|lemonade|beverage|h2juice|drink)\b/.test(
+    nameNorm
+  );
+}
+
 /** Tên gợi ý trái cây/rau bán tươi (không phải chai nước ép). */
 function looksLikeLooseFreshProduceName(displayName) {
   const nameNorm = normalizeNameForMatch(displayName);
-  if (nameSuggestsPackagedDrink(displayName)) return false;
+  if (hasPackagedDrinkKeywords(displayName)) return false;
 
   if (
     /\b(seedless|cut|half|quarter|whole|sliced|wedge|loose)\b/.test(nameNorm) &&
@@ -1353,16 +1369,18 @@ function looksLikeLooseFreshProduceName(displayName) {
 
 /** Chai/lon nước – dùng khi bucket API là unknown. */
 function nameSuggestsPackagedDrink(displayName) {
-  const nameNorm = normalizeNameForMatch(displayName);
-  if (/\b(juice|cordial|soft drink|soda|cola|lemonade|beverage|h2juice|drink)\b/.test(nameNorm)) {
-    return true;
-  }
+  if (hasPackagedDrinkKeywords(displayName)) return true;
+
   const sizeInfo = extractSizeInfo(displayName);
   const hasBottleVolume =
     sizeInfo.grams != null &&
     (/\b\d+(?:\.\d+)?\s*ml\b/i.test(displayName) ||
       /\b\d+(?:\.\d+)?\s*l\b/i.test(displayName));
-  return hasBottleVolume && !looksLikeLooseFreshProduceName(displayName);
+
+  if (!hasBottleVolume) return false;
+
+  // Có dung tích chai nhưng tên là dưa/táo/rau tươi → không phải nước ép
+  return !looksLikeLooseFreshProduceName(displayName);
 }
 
 /**
@@ -1377,7 +1395,7 @@ function classifyCategoryBucket(labels, displayName, raw = {}) {
     (PRODUCE_INTENT_KEYWORDS.some((kw) =>
       haystackHasWord(normalizeNameForMatch(displayName), kw)
     ) &&
-      !nameSuggestsPackagedDrink(displayName))
+      !hasPackagedDrinkKeywords(displayName))
   ) {
     return CATEGORY_BUCKETS.FRESH_PRODUCE;
   }
@@ -1526,6 +1544,7 @@ function isProductEligibleForSearchIntent(product, keyword, listItem = {}) {
 
   if (intent === CATEGORY_BUCKETS.FRESH_PRODUCE) {
     if (nameSuggestsPackagedDrink(name)) return false;
+    if (nameSuggestsNonFreshProduceSnack(name)) return false;
 
     // Tên rõ là trái tươi dù API gán nhầm bucket "drinks"
     if (
@@ -1568,6 +1587,7 @@ function filterProductsForSearchIntent(products, keyword, listItem = {}) {
     return products.filter((p) => {
       const name = p?.name || '';
       if (nameSuggestsPackagedDrink(name)) return false;
+      if (nameSuggestsNonFreshProduceSnack(name)) return false;
       if (resolveProductBucket(p) === CATEGORY_BUCKETS.DRINKS) return false;
       return (
         productNameMatchesProduceKeyword(name, keyword) ||
@@ -1747,6 +1767,7 @@ function scoreProductForKeyword(
   const displayName = productRef.name || productName;
 
   if (!isProductEligibleForSearchIntent(productRef, keyword, listItem)) return 0;
+  if (nameSuggestsNonFreshProduceSnack(displayName)) return 0;
 
   const coreKeyword = stripWeightFromText(keyword);
   const query = `${coreKeyword} ${hintText}`.trim();
@@ -1835,13 +1856,16 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
   let bestScore = 0;
 
   for (const product of candidates) {
-    const score = scoreProductForKeyword(
+    let score = scoreProductForKeyword(
       product.name,
       keyword,
       hint,
       listItem,
       product
     );
+    if (resolveProductBucket(product) === CATEGORY_BUCKETS.FRESH_PRODUCE) {
+      score = Math.min(score + 0.06, 1);
+    }
     if (score > bestScore) {
       bestScore = score;
       best = product;
@@ -1871,6 +1895,7 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
         return (
           productNameMatchesProduceKeyword(name, keyword) &&
           !nameSuggestsPackagedDrink(name) &&
+          !nameSuggestsNonFreshProduceSnack(name) &&
           resolveProductBucket(p) !== CATEGORY_BUCKETS.DRINKS
         );
       });
@@ -2822,8 +2847,3 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 module.exports = app;
-module.exports.pickBestProductMatch = pickBestProductMatch;
-module.exports.normalizeRawList = normalizeRawList;
-module.exports.fetchStoreRawList = fetchStoreRawList;
-module.exports.applyListItemPricing = applyListItemPricing;
-module.exports.buildListItemFromSearchText = buildListItemFromSearchText;
