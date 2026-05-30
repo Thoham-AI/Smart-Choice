@@ -1,15 +1,22 @@
 /**
- * SmartChoice – Backend trung gian RapidAPI
- * Chạy: node server.js  →  http://localhost:3000
+ * SmartChoice – Backend Express (RapidAPI + OpenAI)
+ * Local:  npm start  →  http://localhost:3000  (app.listen khi NODE_ENV !== 'production')
+ * Vercel: export app cho serverless – không gọi listen
  */
 
-require('dotenv').config();
+const path = require('path');
+
+// .env nằm ở thư mục gốc repo (một cấp trên api/)
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const express = require('express');
 const axios   = require('axios');
 const cors    = require('cors');
 const OpenAI = require('openai');
 const stringSimilarity = require('string-similarity');
+
+/** Thư mục front-end tĩnh: ../public (tương đối với api/index.js) */
+const PUBLIC_DIR = path.join(__dirname, '../public');
 
 // ============================================================
 // 1. CẤU HÌNH HẰNG SỐ
@@ -18,7 +25,6 @@ const RAPIDAPI_KEY    = 'da720b7848msh99f571ba1848fcdp1388ddjsn3af3071dc5a4';
 const COLES_HOST      = 'coles-australia-full-catalog-pricing-intelligence-api.p.rapidapi.com';
 const WOOLWORTHS_HOST = 'woolworths-australia-product-category-api.p.rapidapi.com';
 
-const PORT         = 3000;
 const RESULT_LIMIT = 20;   // số sản phẩm tối đa mỗi siêu thị
 const SIMILARITY_THRESHOLD = 0.58; // Ngưỡng sau khi đã tính điểm tổng hợp (tên + size + loại)
 const LIST_MATCH_THRESHOLD = 0.38; // Ngưỡng chọn sản phẩm khớp nhất cho từng dòng giỏ AI
@@ -43,7 +49,8 @@ app.use((_req, res, next) => {
   res.set('Expires', '0');
   next();
 });
-app.use(express.static('public'));     // Phục vụ file tĩnh từ thư mục public/
+// Phục vụ CSS/JS/HTML từ public/ (đường dẫn tuyệt đối, không phụ thuộc cwd)
+app.use(express.static(PUBLIC_DIR));
 
 // ============================================================
 // 3. HÀM TIỆN ÍCH: CHUẨN HÓA GIÁ
@@ -2095,6 +2102,15 @@ app.get('/health', (_req, res) => {
 });
 
 // ============================================================
-// 8. KHỞI ĐỘNG SERVER
+// 8. KHỞI ĐỘNG SERVER (Local vs Vercel)
 // ============================================================
+
+// Local: bắt buộc listen. Vercel production: chỉ export app.
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 SmartChoice đang chạy mượt mà tại: http://localhost:${PORT}`);
+  });
+}
+
 module.exports = app;
