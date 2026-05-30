@@ -4,44 +4,121 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartChoice | Grocery Comparison</title>
-    <link rel="stylesheet" href="style.css">
+    <script>
+      (function () {
+        var t = localStorage.getItem('smartchoice_theme');
+        var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      })();
+    </script>
+    <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
     <div class="app-container">
         <header class="main-header">
+            <button
+                type="button"
+                id="theme-toggle"
+                class="theme-toggle"
+                aria-label="Toggle dark mode"
+                title="Toggle dark mode"
+            >
+                <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
+                <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
+            </button>
             <div class="logo-area">
                 <span class="logo-icon">🛒</span>
                 <h1>SmartChoice</h1>
             </div>
-            <p>Real-time grocery price comparison</p>
+            <p class="tagline">Real-time grocery price comparison</p>
         </header>
+
+        <nav class="main-tabs" aria-label="Main navigation">
+            <button type="button" class="main-tab active" data-tab="compare">Compare Prices</button>
+            <button type="button" class="main-tab" data-tab="watchlist">
+                Price Watchlist
+                <span id="watchlist-tab-badge" class="tab-badge hidden">0</span>
+            </button>
+        </nav>
+
+        <div id="panel-compare" class="tab-panel active">
 
         <section class="search-section">
             <div class="search-bar">
                 <input type="text" id="itemInput" placeholder="What are you looking for? (e.g. Apples)">
-                <button onclick="searchProducts()" id="searchBtn">Compare Prices</button>
+                <button type="button" id="scannerBtn" class="scanner-open-btn" title="Scan product barcode" aria-label="Scan barcode">📷</button>
+                <button type="button" onclick="searchProducts()" id="searchBtn">Compare Prices</button>
+            </div>
+            <section id="recent-searches-section" class="recent-searches hidden" aria-label="Recent searches">
+                <div class="recent-searches-header">
+                    <h3 class="recent-searches-title">Recent searches</h3>
+                    <button
+                        type="button"
+                        id="clear-history-btn"
+                        class="clear-history-btn"
+                        title="Clear search history"
+                        aria-label="Clear search history"
+                    >✕ Clear</button>
+                </div>
+                <div id="recent-searches-tags" class="recent-searches-tags"></div>
+            </section>
+        </section>
+
+        <div id="barcode-scanner-modal" class="scanner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="scanner-modal-title">
+            <div class="scanner-modal-backdrop" id="scanner-backdrop"></div>
+            <div class="scanner-modal-content">
+                <header class="scanner-modal-header">
+                    <h3 id="scanner-modal-title">Scan barcode</h3>
+                    <button type="button" id="scanner-close-btn" class="scanner-close-btn" aria-label="Close scanner">✕</button>
+                </header>
+                <div id="barcode-reader" class="barcode-reader"></div>
+                <p id="scanner-status" class="scanner-status">Point your camera at the product barcode</p>
+            </div>
+        </div>
+
+        <section class="ai-list-section">
+            <div class="ai-list-header">
+                <h2>AI Shopping List</h2>
+                <p class="ai-list-hint">Paste a list — we find the best split between Coles and Woolworths.</p>
+            </div>
+            <div class="ai-list-row">
+                <textarea
+                    id="aiListInput"
+                    class="ai-list-textarea"
+                    rows="2"
+                    placeholder="e.g. 2 kg rice, 1 kg belly pork, 2L milk, 6 eggs"
+                ></textarea>
+                <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List by AI</button>
             </div>
         </section>
 
-        <section class="ai-list-section">
-            <h2>AI Shopping List</h2>
-            <p class="ai-list-hint">Describe your groceries in plain English. We will find the best prices at Coles and Woolworths.</p>
-            <textarea
-                id="aiListInput"
-                class="ai-list-textarea"
-                rows="5"
-                placeholder="e.g. 2 kg rice, 1 kg belly pork, 2L milk, 6 eggs"
-            ></textarea>
-            <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List bằng AI</button>
-        </section>
-
-        <section id="ai-results-section" class="ai-results-section hidden">
-            <h2>Smart cart breakdown</h2>
-            <div id="ai-parse-info" class="ai-parse-info"></div>
-            <div id="ai-totals-grid" class="ai-totals-grid"></div>
-            <p id="ai-savings-banner" class="ai-savings-banner"></p>
-            <div id="ai-split-details" class="ai-split-details"></div>
-            <div id="ai-line-items" class="ai-line-items"></div>
+        <section id="ai-results-section" class="ai-results-section hidden" aria-label="AI shopping list results">
+            <button
+                type="button"
+                id="ai-results-collapse-bar"
+                class="ai-accordion-bar ai-collapse-bar hidden"
+                aria-expanded="true"
+                aria-controls="ai-results-body"
+            >
+                ▲ Collapse AI cart breakdown
+            </button>
+            <button
+                type="button"
+                id="ai-results-expand-bar"
+                class="ai-accordion-bar ai-expand-bar hidden"
+                aria-expanded="false"
+                aria-controls="ai-results-body"
+            >
+                📜 View previous AI list analysis (click to expand)
+            </button>
+            <div id="ai-results-body" class="ai-results-body">
+                <h2>Smart cart breakdown</h2>
+                <div id="ai-parse-info" class="ai-parse-info"></div>
+                <div id="ai-totals-grid" class="ai-totals-grid"></div>
+                <p id="ai-savings-banner" class="ai-savings-banner"></p>
+                <div id="ai-split-details" class="ai-split-details"></div>
+                <div id="ai-line-items" class="ai-line-items"></div>
+            </div>
         </section>
 
         <section id="summary-section" class="summary-section hidden">
@@ -74,6 +151,16 @@
             </div>
         </main>
 
+        </div>
+
+        <section id="panel-watchlist" class="tab-panel watchlist-panel hidden">
+            <h2>Your price watchlist</h2>
+            <p class="watchlist-intro">Products you marked with 🔔 are refreshed with the latest store prices.</p>
+            <button type="button" id="refresh-watchlist-btn" class="refresh-watchlist-btn">Refresh prices</button>
+            <div id="watchlist-status" class="watchlist-status"></div>
+            <div id="watchlist-grid" class="watchlist-grid"></div>
+        </section>
+
         <aside id="cart-panel" class="cart-panel hidden" aria-label="Your cart">
             <h3>Your cart</h3>
             <div id="cart-items" class="cart-items"></div>
@@ -91,6 +178,8 @@
         </footer>
     </div>
 
-    <script src="script.js?v=11"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="script.js?v=22"></script>
+    <script src="barcode-scanner.js?v=2"></script>
 </body>
 </html>

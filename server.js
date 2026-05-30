@@ -321,6 +321,556 @@ function extractSizeFromSlug(slug) {
   return match[1].replace(/\s+/g, '');
 }
 
+/** ID ổn định từ stockcode (WW) hoặc slug (Coles) – dùng cho watchlist */
+function extractProductId(raw, supermarket) {
+  if (supermarket === 'Woolworths' && raw.stockcode != null) {
+    return `ww-${raw.stockcode}`;
+  }
+  if (supermarket === 'Coles' && raw.slug) {
+    return `coles-${String(raw.slug).replace(/^\//, '')}`;
+  }
+  if (raw.product_id != null) return `${supermarket}-${raw.product_id}`;
+  if (raw.id != null) return `${supermarket}-${raw.id}`;
+  return null;
+}
+
+// ============================================================
+// 3d. BARCODE – TRÍCH & SO KHỚP MÃ VẠCH TỪ API
+// ============================================================
+
+/** Chuẩn hóa mã vạch: chỉ giữ chữ số */
+function normalizeBarcode(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+/** Thu thập mọi mã vạch có thể có trên object thô RapidAPI */
+function collectBarcodesFromRaw(raw, found = new Set()) {
+  if (!raw || typeof raw !== 'object') return found;
+
+  const fields = [
+    'barcode',
+    'barcodes',
+    'ean',
+    'ean13',
+    'gtin',
+    'upc',
+    'product_barcode',
+    'productBarcode',
+  ];
+
+  for (const key of fields) {
+    const val = raw[key];
+    if (val == null) continue;
+    if (Array.isArray(val)) {
+      val.forEach((entry) => {
+        const digits = normalizeBarcode(entry);
+        if (digits.length >= 8) found.add(digits);
+      });
+    } else {
+      const digits = normalizeBarcode(val);
+      if (digits.length >= 8) found.add(digits);
+    }
+  }
+
+  if (raw.product && typeof raw.product === 'object') {
+    collectBarcodesFromRaw(raw.product, found);
+  }
+
+  return found;
+}
+
+/** So khớp EAN-13 / UPC (có thể khác số 0 đầu) */
+function barcodesMatch(codeA, codeB) {
+  const a = normalizeBarcode(codeA);
+  const b = normalizeBarcode(codeB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length === 13 && a.startsWith('0') && a.slice(1) === b) return true;
+  if (b.length === 13 && b.startsWith('0') && b.slice(1) === a) return true;
+  return false;
+}
+
+/** Tìm sản phẩm có trường barcode khớp chính xác trong danh sách thô */
+function findProductByBarcodeInRawList(rawList, barcode, supermarket) {
+  const target = normalizeBarcode(barcode);
+  if (target.length < 8) return null;
+
+  for (const raw of rawList) {
+    const codes = collectBarcodesFromRaw(raw);
+    for (const code of codes) {
+      if (barcodesMatch(code, target)) {
+        return normalizeItem(raw, supermarket);
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Ghép cặp so sánh khi quét barcode trúng cả 2 siêu thị */
+function buildDirectComparePair(woolworthsItem, colesItem) {
+  if (!woolworthsItem || !colesItem) return null;
+
+  const saving = Math.abs(woolworthsItem.price - colesItem.price);
+  const cheaper =
+    woolworthsItem.price < colesItem.price
+      ? 'Woolworths'
+      : colesItem.price < woolworthsItem.price
+        ? 'Coles'
+        : 'tie';
+
+  return {
+    woolworths: woolworthsItem,
+    coles: colesItem,
+    cheaper,
+    saving: Number(saving.toFixed(2)),
+    similarity: 1,
+    matchType: 'barcode',
+  };
+}
+
+/** Từ khóa tìm kiếm ngắn khi làm mới giá watchlist */
+function deriveSearchKeyword(productName) {
+  const words = normalizeNameForMatch(productName)
+    .split(' ')
+    .filter((w) => w.length > 2);
+  if (words.length >= 2) return words.slice(0, 5).join(' ');
+  return String(productName).split(/\s+/).slice(0, 4).join(' ');
+}
+
+// ============================================================
+// 3e. THỰC PHẨM TƯƠI – FALLBACK TÌM KIẾM, GIÁ / KG, GHÉP CẶP
+// ============================================================
+
+/** Cụm từ cốt lõi thịt/rau – dùng ghép cặp dù tên có đuôi Roast, Slices, Rind On */
+const FRESH_CORE_PHRASES = [
+  'pork belly',
+  'belly pork',
+  'pork mince',
+  'pork loin',
+  'pork chop',
+  'pork shoulder',
+  'pork leg',
+  'beef mince',
+  'beef rump',
+  'beef steak',
+  'beef brisket',
+  'beef roast',
+  'lamb leg',
+  'lamb chop',
+  'lamb mince',
+  'chicken breast',
+  'chicken thigh',
+  'chicken drumstick',
+  'chicken wing',
+  'whole chicken',
+  'salmon fillet',
+  'barramundi',
+  'prawn',
+  'fish fillet',
+].sort((a, b) => b.length - a.length);
+
+/** Từ khóa nhận diện danh mục tươi sống */
+const FRESH_FOOD_TOKENS = [
+  'pork',
+  'beef',
+  'lamb',
+  'veal',
+  'chicken',
+  'turkey',
+  'duck',
+  'mince',
+  'steak',
+  'fillet',
+  'rump',
+  'belly',
+  'thigh',
+  'breast',
+  'drumstick',
+  'salmon',
+  'prawn',
+  'fish',
+  'tomato',
+  'potato',
+  'onion',
+  'carrot',
+  'broccoli',
+  'lettuce',
+  'cucumber',
+  'mushroom',
+  'cabbage',
+  'cauliflower',
+  'zucchini',
+  'capsicum',
+  'spinach',
+  'celery',
+  'pumpkin',
+  'corn',
+  'apple',
+  'banana',
+  'orange',
+  'grape',
+  'berry',
+  'herb',
+  'parsley',
+  'coriander',
+  'vegetable',
+];
+
+const FRESH_PAIR_SCORE_FLOOR = 0.62;
+const FRESH_LIST_MATCH_THRESHOLD = 0.32;
+
+/** Bỏ phần cân nặng khỏi chuỗi tìm kiếm (1kg, 500g, 2 L, …) */
+function stripWeightFromText(text) {
+  return String(text || '')
+    .replace(/\b\d+(?:\.\d+)?\s*(?:kg|g|ml|l)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Trích số lượng kg/g từ câu tìm kiếm (vd: "pork belly 1kg") */
+function parseWeightFromSearchText(text) {
+  const source = String(text || '');
+  const kgMatch = source.match(/(\d+(?:\.\d+)?)\s*kg\b/i);
+  if (kgMatch) {
+    return { quantity: parseFloat(kgMatch[1]), unit: 'kg' };
+  }
+  const gMatch = source.match(/(\d+(?:\.\d+)?)\s*g\b/i);
+  if (gMatch && !kgMatch) {
+    return { quantity: parseFloat(gMatch[1]), unit: 'g' };
+  }
+  return null;
+}
+
+/** Tạo listItem giả từ ô search để tính giá theo kg */
+function buildListItemFromSearchText(searchText, coreKeyword) {
+  const weight = parseWeightFromSearchText(searchText);
+  if (weight) {
+    return { keyword: coreKeyword, quantity: weight.quantity, unit: weight.unit };
+  }
+  return { keyword: coreKeyword, quantity: 1, unit: 'each' };
+}
+
+function normalizeSearchQuery(q) {
+  return String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** Có thuộc nhóm thực phẩm tươi không */
+function isFreshFoodCategory(name) {
+  const norm = normalizeNameForMatch(name);
+  if (detectFreshCorePhrase(name)) return true;
+  return FRESH_FOOD_TOKENS.some((token) => {
+    const re = new RegExp(`\\b${token}\\b`, 'i');
+    return re.test(norm);
+  });
+}
+
+/** Lấy cụm cốt lõi (vd: "pork belly") từ tên sản phẩm */
+function detectFreshCorePhrase(name) {
+  const norm = normalizeNameForMatch(name);
+  for (const phrase of FRESH_CORE_PHRASES) {
+    if (norm.includes(phrase)) return phrase;
+  }
+  return null;
+}
+
+/** Hai tên cùng cụm cốt lõi → chấp nhận ghép dù khác Roast / Slices / Rind On */
+function freshFoodCorePhraseMatch(nameA, nameB) {
+  const phraseA = detectFreshCorePhrase(nameA);
+  const phraseB = detectFreshCorePhrase(nameB);
+  if (phraseA && phraseB && phraseA === phraseB) return true;
+
+  const normA = normalizeNameForMatch(nameA);
+  const normB = normalizeNameForMatch(nameB);
+  if (phraseA && normB.includes(phraseA)) return true;
+  if (phraseB && normA.includes(phraseB)) return true;
+
+  return false;
+}
+
+// ============================================================
+// 3f. TOÁN HỌC GIÁ GIỎ HÀNG – / KG, QUY ĐỔI KHỐI LƯỢNG, ĐƠN VỊ LẺ
+// ============================================================
+
+/**
+ * Trích khối lượng gói/khay (kg) từ tên hoặc field size API.
+ * VD: khay 1.3kg giá $26 → dùng suy ra $20/kg.
+ */
+function getPackWeightKgFromProduct(displayName, raw = {}) {
+  const sizeInfo = extractSizeInfo(displayName);
+  if (sizeInfo.grams != null && sizeInfo.grams > 0) {
+    return Number((sizeInfo.grams / 1000).toFixed(4));
+  }
+
+  const fromSizeField = parseQuantityFromText(
+    raw.size || raw.package_size || raw.pack_size || ''
+  );
+  if (fromSizeField.amountInBaseUnit && fromSizeField.baseUnit === 'g') {
+    return Number((fromSizeField.amountInBaseUnit / 1000).toFixed(4));
+  }
+
+  return null;
+}
+
+/** Công thức: Price_Per_KG = Giá_khay / Khối_lượng_khay (kg) */
+function derivePricePerKgFromPack(shelfPrice, packWeightKg) {
+  if (shelfPrice == null || packWeightKg == null || packWeightKg <= 0) return null;
+  return Number((shelfPrice / packWeightKg).toFixed(4));
+}
+
+/**
+ * Đọc giá/kg từ unit_price, price_info, price_per_unit… trên payload API.
+ */
+function extractPricePerKgFromApiFields(raw, displayName) {
+  const direct =
+    parsePrice(raw.price_per_kg) ??
+    parsePrice(raw.pricePerKg) ??
+    parsePrice(raw.per_kg_price) ??
+    parsePrice(raw.price_per_kilo) ??
+    parsePrice(raw.pricePerKilo);
+
+  if (direct != null) return direct;
+
+  const priceInfo = raw.price_info || raw.priceInfo;
+  if (priceInfo && typeof priceInfo === 'object') {
+    const fromInfo =
+      parsePrice(priceInfo.price_per_kg) ??
+      parsePrice(priceInfo.per_kg) ??
+      parsePrice(priceInfo.unit_price_per_kg);
+    if (fromInfo != null) return fromInfo;
+  }
+
+  const unitField = String(
+    raw.price_per_unit_unit || raw.unit_of_measure || raw.selling_unit || ''
+  ).toLowerCase();
+
+  if (unitField === 'kg' && raw.price_per_unit_price != null) {
+    const ppu = parsePrice(raw.price_per_unit_price);
+    if (ppu != null) return ppu;
+  }
+
+  const unitPriceRaw = raw.unit_price || raw.unitPrice || raw.UnitPrice;
+  if (typeof unitPriceRaw === 'string') {
+    const perKgInUnit = unitPriceRaw.match(/\$?\s*([\d.]+)\s*\/\s*1?\s*kg\b/i);
+    if (perKgInUnit) return parsePrice(perKgInUnit[1]);
+
+    const per100g = unitPriceRaw.match(/\$?\s*([\d.]+)\s*\/\s*100\s*g\b/i);
+    if (per100g) {
+      const per100 = parsePrice(per100g[1]);
+      if (per100 != null) return Number((per100 * 10).toFixed(4));
+    }
+  }
+
+  const metaText = [
+    displayName,
+    raw.size,
+    raw.package_size,
+    raw.unit,
+    unitPriceRaw,
+    raw.cupString,
+    raw.CupString,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const perKgLabel = /\b(per\s*kg|\/\s*kg|kg\s*each)\b/i.test(metaText);
+  if (perKgLabel) {
+    const fromCup =
+      parsePrice(raw.cupPrice) ??
+      parsePrice(raw.CupPrice) ??
+      parsePrice(raw.price_per_unit_price);
+    if (fromCup != null) return fromCup;
+  }
+
+  const dollarMatch = String(metaText).match(
+    /\$\s*([\d]+(?:\.\d+)?)\s*(?:\/|per)\s*kg/i
+  );
+  if (dollarMatch) return parsePrice(dollarMatch[1]);
+
+  return null;
+}
+
+/**
+ * Xác định Price_Per_KG: ưu tiên API, không có thì suy từ giá khay ÷ cân nặng khay.
+ */
+function resolvePricePerKg(raw, displayName, shelfPrice) {
+  const packWeightKg = getPackWeightKgFromProduct(displayName, raw);
+  let pricePerKg = extractPricePerKgFromApiFields(raw, displayName);
+  let source = pricePerKg != null ? 'api' : null;
+
+  if (pricePerKg == null && shelfPrice != null && packWeightKg != null) {
+    pricePerKg = derivePricePerKgFromPack(shelfPrice, packWeightKg);
+    if (pricePerKg != null) source = 'derived_pack';
+  }
+
+  return { pricePerKg, packWeightKg, source };
+}
+
+/** Target_Weight (kg) từ prompt khách: 1 kg → 1, 500g → 0.5 */
+function getTargetWeightKg(listItem) {
+  if (!listItem) return null;
+  const unit = String(listItem.unit || '').toLowerCase();
+  const qty = Number(listItem.quantity) > 0 ? Number(listItem.quantity) : 1;
+  if (unit === 'kg') return qty;
+  if (unit === 'g') return qty / 1000;
+  return null;
+}
+
+/**
+ * Nhận diện đơn vị lẻ: Half, Quarter, Slices…
+ * multiplier: hệ số quy đổi về 1 đơn vị nguyên (half → ×2).
+ */
+function detectFractionalUnit(productName) {
+  const name = String(productName || '');
+  const lower = name.toLowerCase();
+
+  if (/\bwhole\b/i.test(lower)) {
+    return { isWhole: true, isFractional: false, multiplier: 1, type: 'whole' };
+  }
+
+  if (/\bhalf\b/i.test(lower) || /\b1\/2\b/.test(lower)) {
+    return { isWhole: false, isFractional: true, multiplier: 2, type: 'half', penalizeMatch: true };
+  }
+
+  if (/\bquarter\b/i.test(lower) || /\b1\/4\b/.test(lower)) {
+    return { isWhole: false, isFractional: true, multiplier: 4, type: 'quarter', penalizeMatch: true };
+  }
+
+  if (/\bthird\b/i.test(lower) || /\b1\/3\b/.test(lower)) {
+    return { isWhole: false, isFractional: true, multiplier: 3, type: 'third', penalizeMatch: true };
+  }
+
+  if (/\bslices?\b/i.test(lower)) {
+    return { isWhole: false, isFractional: true, multiplier: 1, type: 'slices', penalizeMatch: true };
+  }
+
+  return { isWhole: false, isFractional: false, multiplier: 1, type: null, penalizeMatch: false };
+}
+
+/** Khách yêu cầu 1 quả/cây nguyên (each × 1) */
+function wantsWholeUnitEach(listItem) {
+  if (!listItem) return false;
+  const unit = String(listItem.unit || '').toLowerCase();
+  const qty = Number(listItem.quantity) > 0 ? Number(listItem.quantity) : 1;
+  return ['each', 'ea', 'bunch'].includes(unit) && qty === 1;
+}
+
+/**
+ * Quy đổi giá hiển thị theo đúng số lượng/khối lượng trong prompt.
+ * - Weight: Final_Displayed_Price = Price_Per_KG × Target_Weight
+ * - Each + fractional: giá_khay × multiplier (half ×2, quarter ×4)
+ */
+function applyListItemPricing(product, listItem) {
+  if (!product || !listItem) return product;
+
+  const unit = String(listItem.unit || 'each').toLowerCase();
+  const qty = Number(listItem.quantity) > 0 ? Number(listItem.quantity) : 1;
+  const targetWeightKg = getTargetWeightKg(listItem);
+
+  const packShelfPrice =
+    product.packShelfPrice != null ? product.packShelfPrice : product.price;
+
+  let pricePerKg = product.pricePerKg;
+  if (pricePerKg == null && targetWeightKg != null) {
+    const packKg = product.packWeightKg ?? getPackWeightKgFromProduct(product.name, {});
+    pricePerKg = derivePricePerKgFromPack(packShelfPrice, packKg);
+  }
+
+  let finalPrice = packShelfPrice;
+  let pricingNote = null;
+  let isAdjustedPrice = false;
+
+  if (pricePerKg != null && targetWeightKg != null) {
+    finalPrice = Number((pricePerKg * targetWeightKg).toFixed(2));
+    isAdjustedPrice = true;
+
+    const weightLabel =
+      unit === 'g' ? `${qty}g` : unit === 'kg' ? `${qty}kg` : `${targetWeightKg}kg`;
+
+    pricingNote = `($${pricePerKg.toFixed(2)}/kg, converted for ${weightLabel})`;
+  } else if (['each', 'ea', 'bunch', 'pack', 'pk'].includes(unit)) {
+    const frac = detectFractionalUnit(product.name);
+
+    if (frac.isFractional && frac.multiplier > 1) {
+      finalPrice = Number((packShelfPrice * frac.multiplier * qty).toFixed(2));
+      isAdjustedPrice = true;
+      pricingNote = `($${packShelfPrice.toFixed(2)} per ${frac.type}, ×${frac.multiplier} → est. 1 whole unit)`;
+    } else {
+      finalPrice = Number((packShelfPrice * qty).toFixed(2));
+      if (qty > 1) {
+        isAdjustedPrice = true;
+        pricingNote = `($${packShelfPrice.toFixed(2)} each × ${qty})`;
+      }
+    }
+  } else {
+    const countable = ['pack', 'pk', 'dozen', 'loaf', 'bottle', 'can'];
+    const multiplier = countable.includes(unit) ? qty : 1;
+    finalPrice = Number((packShelfPrice * multiplier).toFixed(2));
+    if (multiplier > 1) isAdjustedPrice = true;
+  }
+
+  return {
+    ...product,
+    price: finalPrice,
+    packShelfPrice,
+    pricePerKg: pricePerKg ?? product.pricePerKg,
+    isPerKgPricing: pricePerKg != null,
+    isAdjustedPrice,
+    pricingNote,
+    targetQuantity: qty,
+    targetUnit: unit,
+    targetWeightKg,
+    unit_price_text: pricingNote || product.unit_price_text,
+  };
+}
+
+/** Giữ tên cũ – gọi module quy đổi mới */
+function applyWeightContextToProduct(product, listItem) {
+  return applyListItemPricing(product, listItem);
+}
+
+/**
+ * Tìm kiếm có fallback: lượt 1 kèm cân nặng, lượt 2 chỉ từ khóa cốt lõi.
+ */
+async function fetchStoreProducts(supermarket, searchText, listItem = null) {
+  const coreKeyword = stripWeightFromText(listItem?.keyword || searchText);
+  const primaryQuery = listItem
+    ? buildSearchQueryFromListItem(listItem)
+    : searchText;
+  const weightListItem =
+    listItem || buildListItemFromSearchText(searchText, coreKeyword);
+
+  const runSearch = async (query) => {
+    const rawList = await fetchStoreRawList(supermarket, query);
+    return normalizeRawList(rawList, supermarket).map((product) =>
+      applyWeightContextToProduct(product, weightListItem)
+    );
+  };
+
+  let items = await runSearch(primaryQuery);
+  let usedFallback = false;
+
+  const needsFallback = () => {
+    if (!items.length) return true;
+    if (listItem) {
+      const { product } = pickBestProductMatch(items, coreKeyword, listItem);
+      return !product;
+    }
+    return false;
+  };
+
+  const primaryNorm = normalizeSearchQuery(primaryQuery);
+  const coreNorm = normalizeSearchQuery(coreKeyword);
+
+  if (needsFallback() && coreNorm && coreNorm !== primaryNorm) {
+    console.log(`  ↩ ${supermarket} fallback search: "${coreKeyword}"`);
+    items = await runSearch(coreKeyword);
+    usedFallback = true;
+  }
+
+  return { items, usedFallback, coreKeyword, primaryQuery };
+}
+
 function normalizeItem(raw, supermarket) {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -370,16 +920,47 @@ function normalizeItem(raw, supermarket) {
     raw.img ||
     '';
 
-  if (!name || price == null) return null;
+  const packShelfPrice = price;
+  const { pricePerKg, packWeightKg, source: pricePerKgSource } = resolvePricePerKg(
+    raw,
+    name,
+    packShelfPrice
+  );
+  const isPerKgPricing = pricePerKg != null;
 
-  const unit_price_text = buildUnitPriceText(price, name, raw);
+  if (!name || (packShelfPrice == null && pricePerKg == null)) return null;
+
+  let unit_price_text = buildUnitPriceText(packShelfPrice, name, raw);
+  if (isPerKgPricing) {
+    unit_price_text = `$${pricePerKg.toFixed(2)} / kg`;
+    if (pricePerKgSource === 'derived_pack' && packWeightKg) {
+      unit_price_text += ` (from ${packWeightKg}kg pack $${packShelfPrice.toFixed(2)})`;
+    }
+  }
+
+  const productId = extractProductId(raw, supermarket);
+  const searchKeyword = deriveSearchKeyword(name);
+  const barcodeSet = collectBarcodesFromRaw(raw);
+  const barcodes = [...barcodeSet];
+  const barcode = barcodes[0] || null;
 
   return {
+    productId,
+    searchKeyword,
+    barcode,
+    barcodes,
     supermarket,
     name,
     brand: String(raw.brand || raw.brand_name || '').trim(),
     size: String(raw.size || raw.package_size || '').trim(),
-    price,
+    price: packShelfPrice ?? pricePerKg,
+    packShelfPrice,
+    packWeightKg,
+    pricePerKg,
+    pricePerKgSource,
+    isPerKgPricing,
+    pricingNote: null,
+    isAdjustedPrice: false,
     originalPrice,
     isOnSpecial: Boolean(isOnSpecial || saveAmount),
     saveAmount,
@@ -476,6 +1057,14 @@ function extractSizeInfo(name) {
  * - mismatch_one_sided: một bên có size, bên kia không → phạt điểm
  */
 function checkSizeCompatibility(nameA, nameB) {
+  // Thịt/rau tươi: cân nặng khay thay đổi → không loại vì lệch 500g vs 1kg
+  if (
+    freshFoodCorePhraseMatch(nameA, nameB) ||
+    (isFreshFoodCategory(nameA) && isFreshFoodCategory(nameB))
+  ) {
+    return 'ok';
+  }
+
   const a = extractSizeInfo(nameA);
   const b = extractSizeInfo(nameB);
 
@@ -505,6 +1094,12 @@ function scoreProductPair(woolName, colesName) {
   const colesNorm = normalizeNameForMatch(colesName);
   if (!woolNorm || !colesNorm) return 0;
 
+  // Cùng cụm "pork belly" → ghép dù khác Roast / Slices / Rind On
+  if (freshFoodCorePhraseMatch(woolName, colesName)) {
+    const base = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
+    return Math.min(Math.max(base, FRESH_PAIR_SCORE_FLOOR), 1);
+  }
+
   if (!varietiesCompatible(woolName, colesName)) return 0;
 
   const sizeStatus = checkSizeCompatibility(woolName, colesName);
@@ -512,8 +1107,11 @@ function scoreProductPair(woolName, colesName) {
 
   let score = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
 
-  // Một bên có 2kg, bên kia chỉ ghi "Jasmine Rice" → hạ điểm để tránh ghép lệch
-  if (sizeStatus === 'mismatch_one_sided') score *= 0.72;
+  if (sizeStatus === 'mismatch_one_sided') {
+    const freshLoose =
+      isFreshFoodCategory(woolName) || isFreshFoodCategory(colesName);
+    score *= freshLoose ? 0.9 : 0.72;
+  }
 
   return score;
 }
@@ -522,11 +1120,17 @@ function scoreProductPair(woolName, colesName) {
  * Chấm điểm 1 sản phẩm so với từ khóa người dùng (AI shopping list).
  * Dùng cùng logic loại/size như ghép cặp similar.
  */
-function scoreProductForKeyword(productName, keyword, hintText = '') {
-  const query = `${keyword} ${hintText}`.trim();
+function scoreProductForKeyword(productName, keyword, hintText = '', listItem = {}) {
+  const coreKeyword = stripWeightFromText(keyword);
+  const query = `${coreKeyword} ${hintText}`.trim();
   const productNorm = normalizeNameForMatch(productName);
   const queryNorm = normalizeNameForMatch(query);
   if (!productNorm || !queryNorm) return 0;
+
+  if (freshFoodCorePhraseMatch(productName, coreKeyword)) {
+    const base = stringSimilarity.compareTwoStrings(productNorm, queryNorm);
+    return Math.min(Math.max(base, FRESH_PAIR_SCORE_FLOOR - 0.05), 1);
+  }
 
   if (!varietiesCompatible(productName, query)) return 0;
 
@@ -540,7 +1144,25 @@ function scoreProductForKeyword(productName, keyword, hintText = '') {
     if (productNorm.includes(word)) score += 0.04;
   }
 
-  if (sizeStatus === 'mismatch_one_sided') score *= 0.85;
+  if (isFreshFoodCategory(productName) && isFreshFoodCategory(coreKeyword)) {
+    const coreWords = stripWeightFromText(coreKeyword).split(' ').filter((w) => w.length > 2);
+    const allInProduct = coreWords.length > 0 && coreWords.every((w) => productNorm.includes(w));
+    if (allInProduct) score = Math.max(score, 0.52);
+  }
+
+  // Rau/quả each: ưu tiên "Whole", hạ điểm Half / Quarter / Slices
+  if (wantsWholeUnitEach(listItem)) {
+    const frac = detectFractionalUnit(productName);
+    if (frac.isWhole) {
+      score = Math.min(score + 0.14, 1);
+    } else if (frac.penalizeMatch) {
+      score *= frac.type === 'slices' ? 0.42 : 0.36;
+    }
+  }
+
+  if (sizeStatus === 'mismatch_one_sided') {
+    score *= isFreshFoodCategory(productName) ? 0.92 : 0.85;
+  }
 
   return Math.min(score, 1);
 }
@@ -554,14 +1176,19 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
   let bestScore = 0;
 
   for (const product of products) {
-    const score = scoreProductForKeyword(product.name, keyword, hint);
+    const score = scoreProductForKeyword(product.name, keyword, hint, listItem);
     if (score > bestScore) {
       bestScore = score;
       best = product;
     }
   }
 
-  if (!best || bestScore < LIST_MATCH_THRESHOLD) {
+  const threshold =
+    isFreshFoodCategory(keyword) || isFreshFoodCategory(best?.name)
+      ? FRESH_LIST_MATCH_THRESHOLD
+      : LIST_MATCH_THRESHOLD;
+
+  if (!best || bestScore < threshold) {
     return { product: null, score: bestScore };
   }
 
@@ -586,16 +1213,11 @@ function buildSearchQueryFromListItem(listItem) {
 }
 
 /**
- * Tính tiền 1 dòng: nhân quantity khi unit là each/pack/bunch.
- * Với kg/g/L chỉ tính 1 gói khớp (API trả về giá theo pack).
+ * Tính tiền 1 dòng giỏ (dùng chung công thức với applyListItemPricing).
  */
 function computeLinePrice(product, listItem) {
   if (!product) return 0;
-  const unit = String(listItem.unit || 'each').toLowerCase();
-  const qty = Number(listItem.quantity) > 0 ? Number(listItem.quantity) : 1;
-  const countable = ['each', 'ea', 'pack', 'pk', 'bunch', 'dozen', 'loaf', 'bottle', 'can'];
-  const multiplier = countable.includes(unit) ? qty : 1;
-  return Number((product.price * multiplier).toFixed(2));
+  return applyListItemPricing(product, listItem).price;
 }
 
 // ============================================================
@@ -677,14 +1299,16 @@ async function resolveListItem(listItem) {
   const [colesSettled, woolSettled] = await Promise.allSettled([
     (async () => {
       try {
-        return { items: await fetchColes(searchQuery), error: null };
+        const result = await fetchStoreProducts('Coles', searchQuery, listItem);
+        return { items: result.items, error: null, usedFallback: result.usedFallback };
       } catch (error) {
         return { items: [], error: formatStoreError('Coles', error) };
       }
     })(),
     (async () => {
       try {
-        return { items: await fetchWoolworths(searchQuery), error: null };
+        const result = await fetchStoreProducts('Woolworths', searchQuery, listItem);
+        return { items: result.items, error: null, usedFallback: result.usedFallback };
       } catch (error) {
         return { items: [], error: formatStoreError('Woolworths', error) };
       }
@@ -711,38 +1335,45 @@ async function resolveListItem(listItem) {
     listItem
   );
 
-  const colesPrice = computeLinePrice(colesMatch.product, listItem);
-  const woolPrice = computeLinePrice(woolMatch.product, listItem);
+  const colesPriced = colesMatch.product
+    ? applyListItemPricing(colesMatch.product, listItem)
+    : null;
+  const woolPriced = woolMatch.product
+    ? applyListItemPricing(woolMatch.product, listItem)
+    : null;
+
+  const colesPrice = colesPriced?.price ?? 0;
+  const woolPrice = woolPriced?.price ?? 0;
 
   let chosenStore = null;
   let chosenProduct = null;
   let lineTotal = 0;
 
-  if (colesMatch.product && woolMatch.product) {
+  if (colesPriced && woolPriced) {
     if (colesPrice <= woolPrice) {
       chosenStore = 'Coles';
-      chosenProduct = colesMatch.product;
+      chosenProduct = colesPriced;
       lineTotal = colesPrice;
     } else {
       chosenStore = 'Woolworths';
-      chosenProduct = woolMatch.product;
+      chosenProduct = woolPriced;
       lineTotal = woolPrice;
     }
-  } else if (colesMatch.product) {
+  } else if (colesPriced) {
     chosenStore = 'Coles';
-    chosenProduct = colesMatch.product;
+    chosenProduct = colesPriced;
     lineTotal = colesPrice;
-  } else if (woolMatch.product) {
+  } else if (woolPriced) {
     chosenStore = 'Woolworths';
-    chosenProduct = woolMatch.product;
+    chosenProduct = woolPriced;
     lineTotal = woolPrice;
   }
 
   return {
     request: listItem,
     searchQuery,
-    coles: colesMatch.product,
-    woolworths: woolMatch.product,
+    coles: colesPriced,
+    woolworths: woolPriced,
     colesLinePrice: colesPrice,
     woolworthsLinePrice: woolPrice,
     colesMatchScore: colesMatch.score,
@@ -801,59 +1432,182 @@ function buildCartOptimization(lineItems) {
   woolworthsOnlyTotal = Number(woolworthsOnlyTotal.toFixed(2));
   splitTotal = Number(splitTotal.toFixed(2));
 
-  const singleStoreOptions = [
-    { store: 'Coles', total: colesOnlyTotal },
-    { store: 'Woolworths', total: woolworthsOnlyTotal },
-  ].filter((o) => o.total > 0);
-
-  const baseline =
-    singleStoreOptions.length > 0
-      ? Math.max(...singleStoreOptions.map((o) => o.total))
-      : 0;
-  const baselineStore =
-    colesOnlyTotal >= woolworthsOnlyTotal ? 'Coles' : 'Woolworths';
-
-  const savingsAmount = Number(Math.max(0, baseline - splitTotal).toFixed(2));
-  const savingsPercent =
-    baseline > 0 ? Number(((savingsAmount / baseline) * 100).toFixed(1)) : 0;
-
-  const savingsVsColes =
-    colesOnlyTotal > splitTotal
-      ? {
-          amount: Number((colesOnlyTotal - splitTotal).toFixed(2)),
-          percent: Number(
-            (((colesOnlyTotal - splitTotal) / colesOnlyTotal) * 100).toFixed(1)
-          ),
-        }
-      : { amount: 0, percent: 0 };
-
-  const savingsVsWoolworths =
-    woolworthsOnlyTotal > splitTotal
-      ? {
-          amount: Number((woolworthsOnlyTotal - splitTotal).toFixed(2)),
-          percent: Number(
-            (
-              ((woolworthsOnlyTotal - splitTotal) / woolworthsOnlyTotal) *
-              100
-            ).toFixed(1)
-          ),
-        }
-      : { amount: 0, percent: 0 };
+  const bestPick = pickBestCartStrategy(
+    colesOnlyTotal,
+    woolworthsOnlyTotal,
+    splitTotal
+  );
+  const recommendation = buildCartRecommendationMessage(
+    bestPick,
+    colesOnlyTotal,
+    woolworthsOnlyTotal,
+    splitTotal
+  );
 
   return {
     colesOnlyTotal,
     woolworthsOnlyTotal,
     splitTotal,
     splitCart,
-    savings: {
-      amount: savingsAmount,
-      percent: savingsPercent,
-      comparedTo: baselineStore,
-    },
-    savingsVsColes,
-    savingsVsWoolworths,
+    bestStrategy: bestPick.strategy,
+    recommendedStore: bestPick.store,
+    bestTotal: bestPick.total,
+    isSplitWorthIt: bestPick.strategy === 'split',
+    recommendation,
+    savings: recommendation,
+    savingsVsColes: recommendation.savingsVsColes,
+    savingsVsWoolworths: recommendation.savingsVsWoolworths,
     unresolved,
   };
+}
+
+const PRICE_COMPARE_EPS = 0.01;
+
+/**
+ * Chọn phương án rẻ nhất. Nếu giá bằng nhau → ưu tiên mua hết 1 siêu thị (không gọi là split).
+ */
+function pickBestCartStrategy(colesOnlyTotal, woolworthsOnlyTotal, splitTotal) {
+  const candidates = [];
+
+  if (colesOnlyTotal > 0) {
+    candidates.push({
+      strategy: 'coles_only',
+      store: 'Coles',
+      total: colesOnlyTotal,
+    });
+  }
+  if (woolworthsOnlyTotal > 0) {
+    candidates.push({
+      strategy: 'woolworths_only',
+      store: 'Woolworths',
+      total: woolworthsOnlyTotal,
+    });
+  }
+  if (splitTotal > 0) {
+    candidates.push({ strategy: 'split', store: 'Split', total: splitTotal });
+  }
+
+  if (!candidates.length) {
+    return { strategy: 'none', store: null, total: 0 };
+  }
+
+  candidates.sort((a, b) => {
+    const diff = a.total - b.total;
+    if (Math.abs(diff) > PRICE_COMPARE_EPS) return diff;
+    const rank = (strategy) => (strategy === 'split' ? 1 : 0);
+    return rank(a.strategy) - rank(b.strategy);
+  });
+
+  return candidates[0];
+}
+
+/** Thông báo tiết kiệm theo phương án thực sự tốt nhất */
+function buildCartRecommendationMessage(
+  bestPick,
+  colesOnlyTotal,
+  woolworthsOnlyTotal,
+  splitTotal
+) {
+  const empty = {
+    message: '',
+    amount: 0,
+    percent: 0,
+    comparedTo: null,
+    savingsVsColes: { amount: 0, percent: 0 },
+    savingsVsWoolworths: { amount: 0, percent: 0 },
+  };
+
+  if (!bestPick?.strategy || bestPick.strategy === 'none') return empty;
+
+  if (bestPick.strategy === 'woolworths_only' && colesOnlyTotal > woolworthsOnlyTotal) {
+    const amount = Number((colesOnlyTotal - woolworthsOnlyTotal).toFixed(2));
+    const percent = Number(((amount / colesOnlyTotal) * 100).toFixed(1));
+    return {
+      message: `🎉 Head to Woolworths! You'll save $${amount.toFixed(2)} (${percent}%) compared to buying everything at Coles.`,
+      amount,
+      percent,
+      comparedTo: 'Coles',
+      savingsVsColes: { amount, percent },
+      savingsVsWoolworths: { amount: 0, percent: 0 },
+    };
+  }
+
+  if (bestPick.strategy === 'coles_only' && woolworthsOnlyTotal > colesOnlyTotal) {
+    const amount = Number((woolworthsOnlyTotal - colesOnlyTotal).toFixed(2));
+    const percent = Number(((amount / woolworthsOnlyTotal) * 100).toFixed(1));
+    return {
+      message: `🎉 Coles wins this round! You'll save $${amount.toFixed(2)} (${percent}%) vs buying everything at Woolworths.`,
+      amount,
+      percent,
+      comparedTo: 'Woolworths',
+      savingsVsColes: { amount: 0, percent: 0 },
+      savingsVsWoolworths: { amount, percent },
+    };
+  }
+
+  if (bestPick.strategy === 'split') {
+    const baseline = Math.max(colesOnlyTotal, woolworthsOnlyTotal);
+    const baselineStore =
+      colesOnlyTotal >= woolworthsOnlyTotal ? 'Coles' : 'Woolworths';
+    const amount = Number(Math.max(0, baseline - splitTotal).toFixed(2));
+    const percent =
+      baseline > 0 ? Number(((amount / baseline) * 100).toFixed(1)) : 0;
+
+    return {
+      message:
+        amount > 0
+          ? `💡 Best for your wallet: split your cart between stores and save $${amount.toFixed(2)} (${percent}%) vs buying everything at ${baselineStore}.`
+          : '✨ Split cart matches the cheapest single-store total — either works!',
+      amount,
+      percent,
+      comparedTo: baselineStore,
+      savingsVsColes:
+        colesOnlyTotal > splitTotal
+          ? {
+              amount: Number((colesOnlyTotal - splitTotal).toFixed(2)),
+              percent: Number(
+                (((colesOnlyTotal - splitTotal) / colesOnlyTotal) * 100).toFixed(1)
+              ),
+            }
+          : { amount: 0, percent: 0 },
+      savingsVsWoolworths:
+        woolworthsOnlyTotal > splitTotal
+          ? {
+              amount: Number((woolworthsOnlyTotal - splitTotal).toFixed(2)),
+              percent: Number(
+                (
+                  ((woolworthsOnlyTotal - splitTotal) / woolworthsOnlyTotal) *
+                  100
+                ).toFixed(1)
+              ),
+            }
+          : { amount: 0, percent: 0 },
+    };
+  }
+
+  if (bestPick.strategy === 'woolworths_only') {
+    return {
+      message: '🛒 Woolworths has the best total for your whole list — one stop and you\'re done!',
+      amount: 0,
+      percent: 0,
+      comparedTo: null,
+      savingsVsColes: { amount: 0, percent: 0 },
+      savingsVsWoolworths: { amount: 0, percent: 0 },
+    };
+  }
+
+  if (bestPick.strategy === 'coles_only') {
+    return {
+      message: '🛒 Coles has the best total for your whole list — one stop and you\'re done!',
+      amount: 0,
+      percent: 0,
+      comparedTo: null,
+      savingsVsColes: { amount: 0, percent: 0 },
+      savingsVsWoolworths: { amount: 0, percent: 0 },
+    };
+  }
+
+  return empty;
 }
 
 /**
@@ -881,7 +1635,13 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
       }
     });
 
-    if (bestIndex < 0 || bestScore <= SIMILARITY_THRESHOLD) continue;
+    const pairThreshold =
+      bestIndex >= 0 &&
+      freshFoodCorePhraseMatch(woolItem.name, colesItems[bestIndex].name)
+        ? FRESH_PAIR_SCORE_FLOOR - 0.02
+        : SIMILARITY_THRESHOLD;
+
+    if (bestIndex < 0 || bestScore <= pairThreshold) continue;
 
     usedColesIndexes.add(bestIndex);
     const colesItem = colesItems[bestIndex];
@@ -906,43 +1666,34 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
 }
 
 // ============================================================
-// 5. HÀM GỌI COLES RAPIDAPI
+// 5. HÀM GỌI COLES / WOOLWORTHS RAPIDAPI
 // ============================================================
-async function fetchColes(keyword) {
-  const url = `https://${COLES_HOST}/coles/search`;
+
+/** Gọi search API và trả về mảng sản phẩm thô (dùng cho khớp barcode) */
+async function fetchStoreRawList(supermarket, keyword) {
+  const isColes = supermarket === 'Coles';
+  const host = isColes ? COLES_HOST : WOOLWORTHS_HOST;
+  const path = isColes ? '/coles/search' : '/woolworths/search';
+  const url = `https://${host}${path}`;
   let lastError = null;
 
-  // Coles hay timeout → retry + tăng timeout
   for (let attempt = 1; attempt <= API_MAX_RETRIES; attempt++) {
     try {
       const response = await axios.get(url, {
-        params: {
-          query: keyword,
-          page: 1,
-        },
+        params: { query: keyword, page: 1 },
         headers: {
           'x-rapidapi-key': RAPIDAPI_KEY,
-          'x-rapidapi-host': COLES_HOST,
+          'x-rapidapi-host': host,
         },
         timeout: API_TIMEOUT_MS,
       });
 
-      const rawList = extractResultsArray(response.data);
-      const items = rawList
-        .map((item) => normalizeItem(item, 'Coles'))
-        .filter(Boolean)
-        .slice(0, RESULT_LIMIT);
-
-      if (!items.length && rawList.length) {
-        console.warn('  ⚠️ Coles returned items but none could be normalized.');
-      }
-
-      return items;
+      return extractResultsArray(response.data);
     } catch (error) {
       lastError = error;
       const retryable = isRetryableApiError(error);
       console.error(
-        `  ❌ Coles attempt ${attempt}/${API_MAX_RETRIES} failed:`,
+        `  ❌ ${supermarket} attempt ${attempt}/${API_MAX_RETRIES} failed:`,
         error?.response?.data || error?.message || error?.code
       );
       if (retryable && attempt < API_MAX_RETRIES) {
@@ -953,57 +1704,30 @@ async function fetchColes(keyword) {
     }
   }
 
-  throw lastError || new Error('Coles API failed.');
+  throw lastError || new Error(`${supermarket} API failed.`);
 }
 
-// ============================================================
-// 6. HÀM GỌI WOOLWORTHS RAPIDAPI
-// ============================================================
-async function fetchWoolworths(keyword) {
-  const url = `https://${WOOLWORTHS_HOST}/woolworths/search`;
-  let lastError = null;
+function normalizeRawList(rawList, supermarket) {
+  const items = rawList
+    .map((item) => normalizeItem(item, supermarket))
+    .filter(Boolean)
+    .slice(0, RESULT_LIMIT);
 
-  for (let attempt = 1; attempt <= API_MAX_RETRIES; attempt++) {
-    try {
-      const { data } = await axios.get(url, {
-        params: {
-          query: keyword,
-          page: 1,
-        },
-        headers: {
-          'x-rapidapi-key': RAPIDAPI_KEY,
-          'x-rapidapi-host': WOOLWORTHS_HOST,
-        },
-        timeout: API_TIMEOUT_MS,
-      });
-
-      const rawList = extractResultsArray(data);
-      const items = rawList
-        .map((item) => normalizeItem(item, 'Woolworths'))
-        .filter(Boolean)
-        .slice(0, RESULT_LIMIT);
-
-      if (!items.length && rawList.length) {
-        console.warn('  ⚠️ Woolworths returned items but none could be normalized.');
-      }
-
-      return items;
-    } catch (error) {
-      lastError = error;
-      const retryable = isRetryableApiError(error);
-      console.error(
-        `  ❌ Woolworths attempt ${attempt}/${API_MAX_RETRIES} failed:`,
-        error?.response?.data || error?.message || error?.code
-      );
-      if (retryable && attempt < API_MAX_RETRIES) {
-        await sleep(1500 * attempt);
-        continue;
-      }
-      throw lastError;
-    }
+  if (!items.length && rawList.length) {
+    console.warn(`  ⚠️ ${supermarket} returned items but none could be normalized.`);
   }
 
-  throw lastError || new Error('Woolworths API failed.');
+  return items;
+}
+
+async function fetchColes(keyword, listItem = null) {
+  const { items } = await fetchStoreProducts('Coles', keyword, listItem);
+  return items;
+}
+
+async function fetchWoolworths(keyword, listItem = null) {
+  const { items } = await fetchStoreProducts('Woolworths', keyword, listItem);
+  return items;
 }
 
 // ============================================================
@@ -1033,8 +1757,8 @@ app.get('/api/compare', async (req, res) => {
   // Bọc try/catch riêng cho Coles: lỗi vẫn trả Woolworths bình thường
   const safeFetchColes = async () => {
     try {
-      const items = await fetchColes(keyword);
-      return { items, error: null };
+      const result = await fetchStoreProducts('Coles', keyword);
+      return { items: result.items, error: null, usedFallback: result.usedFallback };
     } catch (error) {
       const message = formatStoreError('Coles', error);
       console.error('  ❌ Coles error:', message);
@@ -1044,8 +1768,8 @@ app.get('/api/compare', async (req, res) => {
 
   const safeFetchWoolworths = async () => {
     try {
-      const items = await fetchWoolworths(keyword);
-      return { items, error: null };
+      const result = await fetchStoreProducts('Woolworths', keyword);
+      return { items: result.items, error: null, usedFallback: result.usedFallback };
     } catch (error) {
       const message = formatStoreError('Woolworths', error);
       console.error('  ❌ Woolworths error:', message);
@@ -1112,6 +1836,90 @@ app.get('/api/compare', async (req, res) => {
 });
 
 // ============================================================
+// 7a. QUÉT BARCODE: GET /api/compare/barcode?barcode=...
+// ============================================================
+/**
+ * Tìm sản phẩm theo mã vạch (không theo tên):
+ * - Gọi search API với chuỗi barcode (WW/Coles hỗ trợ tìm theo barcode)
+ * - Lọc kết quả có field barcode khớp chính xác
+ */
+app.get('/api/compare/barcode', async (req, res) => {
+  const barcode = normalizeBarcode(req.query.barcode);
+
+  if (!barcode || barcode.length < 8) {
+    return res.status(400).json({
+      error: 'Invalid barcode. Provide at least 8 digits.',
+    });
+  }
+
+  console.log(`\n📷 Barcode lookup: ${barcode}`);
+
+  const safeFetchRaw = async (supermarket) => {
+    try {
+      const rawList = await fetchStoreRawList(supermarket, barcode);
+      const product = findProductByBarcodeInRawList(rawList, barcode, supermarket);
+      return { product, error: null };
+    } catch (error) {
+      const message = formatStoreError(supermarket, error);
+      console.error(`  ❌ ${supermarket} barcode error:`, message);
+      return { product: null, error: message };
+    }
+  };
+
+  const [colesSettled, woolSettled] = await Promise.allSettled([
+    safeFetchRaw('Coles'),
+    safeFetchRaw('Woolworths'),
+  ]);
+
+  const colesResult =
+    colesSettled.status === 'fulfilled'
+      ? colesSettled.value
+      : { product: null, error: formatStoreError('Coles', colesSettled.reason) };
+  const woolResult =
+    woolSettled.status === 'fulfilled'
+      ? woolSettled.value
+      : { product: null, error: formatStoreError('Woolworths', woolSettled.reason) };
+
+  const colesItem = colesResult.product;
+  const woolItem = woolResult.product;
+
+  if (!colesItem && !woolItem) {
+    return res.status(404).json({
+      error: 'No product found with this barcode at Coles or Woolworths.',
+      scannedBarcode: barcode,
+      storeErrors: {
+        coles: colesResult.error,
+        woolworths: woolResult.error,
+      },
+    });
+  }
+
+  const colesItems = colesItem ? [colesItem] : [];
+  const woolworthsItems = woolItem ? [woolItem] : [];
+  const combined = [...colesItems, ...woolworthsItems];
+
+  const directPair = buildDirectComparePair(woolItem, colesItem);
+  const similarPairs = directPair
+    ? [directPair]
+    : buildSimilarPairs(woolworthsItems, colesItems);
+
+  console.log(
+    `  ✅ Barcode hit | Coles: ${colesItem ? 'yes' : 'no'} | WW: ${woolItem ? 'yes' : 'no'}\n`
+  );
+
+  res.json({
+    items: combined,
+    similarPairs,
+    scannedBarcode: barcode,
+    searchMode: 'barcode',
+    storeErrors: {
+      coles: colesResult.error,
+      woolworths: woolResult.error,
+    },
+  });
+});
+
+// ============================================================
 // 7b. AI SHOPPING LIST: POST /api/analyze-prompt
 // ============================================================
 /**
@@ -1169,6 +1977,113 @@ app.post('/api/analyze-prompt', async (req, res) => {
     lineItems: lineResults,
     optimization,
   });
+});
+
+// ============================================================
+// 7c. WATCHLIST: POST /api/watchlist/refresh
+// ============================================================
+
+/** Tìm đúng sản phẩm trong kết quả search theo tên / URL đã lưu */
+function findWatchlistProduct(products, watchEntry) {
+  if (!products?.length) return null;
+
+  const targetNorm = normalizeNameForMatch(watchEntry.name);
+  const savedUrl = String(watchEntry.url || '').trim();
+
+  if (savedUrl) {
+    const byUrl = products.find((p) => p.url === savedUrl);
+    if (byUrl) return byUrl;
+  }
+
+  const exact = products.find(
+    (p) => normalizeNameForMatch(p.name) === targetNorm
+  );
+  if (exact) return exact;
+
+  const keyword = watchEntry.searchKeyword || deriveSearchKeyword(watchEntry.name);
+  const { product } = pickBestProductMatch(products, keyword);
+  return product;
+}
+
+/** Làm mới giá cho 1 mục watchlist */
+async function refreshSingleWatchItem(entry) {
+  const supermarket = entry.supermarket;
+  const keyword = String(entry.searchKeyword || deriveSearchKeyword(entry.name)).trim();
+
+  try {
+    const products =
+      supermarket === 'Coles'
+        ? await fetchColes(keyword)
+        : await fetchWoolworths(keyword);
+
+    const matched = findWatchlistProduct(products, entry);
+
+    if (!matched) {
+      return {
+        id: entry.id,
+        found: false,
+        error: 'Product not found in latest search results.',
+      };
+    }
+
+    const watchedPrice = Number(entry.watchedAtPrice);
+    const currentPrice = matched.price;
+    const priceDrop =
+      Number.isFinite(watchedPrice) && currentPrice < watchedPrice
+        ? Number((watchedPrice - currentPrice).toFixed(2))
+        : 0;
+
+    return {
+      id: entry.id,
+      found: true,
+      currentPrice,
+      watchedAtPrice: watchedPrice,
+      priceDrop,
+      isPriceDown: priceDrop > 0,
+      product: matched,
+    };
+  } catch (error) {
+    return {
+      id: entry.id,
+      found: false,
+      error: formatStoreError(supermarket, error),
+    };
+  }
+}
+
+/**
+ * Nhận danh sách sản phẩm đang theo dõi → gọi API song song → trả giá mới.
+ * Body: { items: [{ id, name, supermarket, watchedAtPrice, url?, searchKeyword? }] }
+ */
+app.post('/api/watchlist/refresh', async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+
+  if (!items.length) {
+    return res.status(400).json({ error: 'Missing items array.' });
+  }
+
+  if (items.length > 30) {
+    return res.status(400).json({ error: 'Maximum 30 watchlist items per request.' });
+  }
+
+  console.log(`\n🔔 Refresh watchlist: ${items.length} items`);
+
+  const results = await Promise.all(
+    items.map((entry) =>
+      refreshSingleWatchItem({
+        id: entry.id,
+        name: entry.name,
+        supermarket: entry.supermarket,
+        watchedAtPrice: entry.watchedAtPrice,
+        url: entry.url,
+        searchKeyword: entry.searchKeyword,
+      })
+    )
+  );
+
+  console.log(`  ✅ Refreshed ${results.filter((r) => r.found).length}/${items.length}\n`);
+
+  res.json({ results });
 });
 
 // Health check endpoint
