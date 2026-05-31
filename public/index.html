@@ -11,7 +11,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=2">
+    <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
     <div class="app-container">
@@ -90,6 +90,20 @@
                 ></textarea>
                 <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List by AI</button>
             </div>
+            <div
+                id="ai-analyze-progress"
+                class="ai-analyze-progress hidden"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+                aria-label="Analyzing shopping list"
+            >
+                <div class="ai-analyze-progress-track">
+                    <div id="ai-analyze-progress-fill" class="ai-analyze-progress-fill"></div>
+                </div>
+                <span id="ai-analyze-progress-label" class="ai-analyze-progress-label">0%</span>
+            </div>
         </section>
 
         <section id="ai-results-section" class="ai-results-section hidden" aria-label="AI shopping list results">
@@ -128,10 +142,11 @@
 
         <section id="matched-section" class="matched-section hidden">
             <h2>Similar products</h2>
+            <p class="matched-section-hint">Best-matched pairs between Coles and Woolworths — add items to your list from here.</p>
             <div id="matched-results" class="matched-list"></div>
         </section>
 
-        <main class="comparison-grid">
+        <main class="comparison-grid comparison-grid--browse">
             <div class="store-column" id="woolies-col">
                 <div class="store-brand woolies-brand">
                     <h2>Woolworths</h2>
@@ -163,6 +178,7 @@
 
         <aside id="cart-panel" class="cart-panel hidden" aria-label="Your cart">
             <h3>Your cart</h3>
+            <div id="cart-trip-savings" class="trip-savings-banner hidden" aria-live="polite"></div>
             <div id="cart-items" class="cart-items"></div>
             <div id="cart-totals" class="cart-totals"></div>
             <p id="cart-savings" class="cart-savings"></p>
@@ -179,7 +195,7 @@
     </div>
 
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-    <script src="script.js?v=26"></script>
+    <script src="script.js?v=31"></script>
     <script src="barcode-scanner.js?v=3"></script>
 </body>
 </html>

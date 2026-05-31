@@ -10,6 +10,126 @@ const THEME_STORAGE_KEY = 'smartchoice_theme';
 const HISTORY_STORAGE_KEY = 'smartchoice_history';
 const HISTORY_MAX_ITEMS = 5;
 
+/** Tổng tiền tiết kiệm tích lũy trong giỏ (cộng dồn mỗi lần Add to cart) */
+let totalSaved = 0;
+
+// --- Tiết kiệm / gamification (so sánh Coles vs Woolworths) ---
+
+/** Làm tròn tiền tệ 2 chữ số thập phân */
+function roundMoney(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(2));
+}
+
+/**
+ * Tính chênh lệch giá giữa hai siêu thị cho một món (item-level saving).
+ * @returns {{ saving: number, cheaperStore: 'Coles'|'Woolworths'|'tie'|null }}
+ */
+function calcDualStoreSaving(colesPrice, woolPrice) {
+  const coles = Number(colesPrice);
+  const wool = Number(woolPrice);
+  if (!Number.isFinite(coles) || !Number.isFinite(wool) || coles <= 0 || wool <= 0) {
+    return { saving: 0, cheaperStore: null };
+  }
+  const saving = roundMoney(Math.abs(coles - wool));
+  if (saving <= 0) return { saving: 0, cheaperStore: 'tie' };
+  const cheaperStore = wool < coles ? 'Woolworths' : 'Coles';
+  return { saving, cheaperStore };
+}
+
+/**
+ * Badge xanh lá cạnh giá rẻ hơn: "Save $2.50 by choosing Coles".
+ * @param {'Coles'|'Woolworths'} storeForThisSide - Siêu thị của cột đang hiển thị
+ */
+function buildItemSavingBadge(colesPrice, woolPrice, storeForThisSide) {
+  const { saving, cheaperStore } = calcDualStoreSaving(colesPrice, woolPrice);
+  if (!cheaperStore || cheaperStore === 'tie' || saving <= 0) return '';
+  if (cheaperStore !== storeForThisSide) return '';
+  return `<span class="item-saving-badge">Save $${saving.toFixed(2)} by choosing ${cheaperStore}</span>`;
+}
+
+/** Khối giá + badge tiết kiệm (dùng ở Similar products) */
+function buildPriceBlockWithSaving(item, colesPrice, woolPrice) {
+  const badge = buildItemSavingBadge(colesPrice, woolPrice, item.supermarket);
+  return `${buildPriceBlock(item)}${badge}`;
+}
+
+/**
+ * Tiết kiệm của một dòng giỏ = chênh lệch Coles vs Woolworths (nếu có đủ hai giá).
+ */
+function calcLineSavingForCartEntry(entry) {
+  return calcDualStoreSaving(entry.colesPrice, entry.woolworthsPrice).saving;
+}
+
+/**
+ * Cộng dồn tiết kiệm toàn giỏ = tổng tiết kiệm từng món đã Add to cart.
+ */
+function calcCartCumulativeSaving(cart) {
+  let saving = 0;
+  let referenceTotal = 0;
+
+  for (const entry of cart) {
+    const lineSaving =
+      entry.lineSaving != null ? Number(entry.lineSaving) : calcLineSavingForCartEntry(entry);
+    saving += lineSaving;
+
+    const coles = entry.colesPrice;
+    const wool = entry.woolworthsPrice;
+    if (coles != null && wool != null) {
+      referenceTotal += Math.max(coles, wool);
+    } else {
+      referenceTotal += coles ?? wool ?? 0;
+    }
+  }
+
+  return {
+    saving: roundMoney(saving),
+    referenceTotal: roundMoney(referenceTotal),
+  };
+}
+
+/**
+ * Cập nhật totalSaved và banner trong panel giỏ hàng (chỉ hiện ở cart).
+ */
+function updateCartSavingsDisplay() {
+  const cart = loadCart();
+  const { saving, referenceTotal } = calcCartCumulativeSaving(cart);
+  totalSaved = saving;
+  renderTripSavingsBanner(
+    document.getElementById('cart-trip-savings'),
+    totalSaved,
+    referenceTotal
+  );
+}
+
+/** Render banner "You've saved" trong giỏ hàng */
+function renderTripSavingsBanner(el, amount, referenceTotal = 0) {
+  if (!el) return;
+
+  const saved = roundMoney(amount);
+
+  if (saved <= 0) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    el.classList.remove('trip-savings-banner--celebrate');
+    return;
+  }
+
+  const pct = referenceTotal > 0 ? (saved / referenceTotal) * 100 : 0;
+  const celebrate = pct > 30;
+  const icon = celebrate ? '🎉🥳' : '🥳';
+
+  el.innerHTML = `
+    <span class="trip-savings-icon">${icon}</span>
+    <span class="trip-savings-text">You've saved <strong>$${saved.toFixed(2)}</strong> on this shopping trip!</span>
+  `;
+  el.classList.remove('hidden');
+  el.classList.toggle('trip-savings-banner--celebrate', celebrate);
+  el.classList.add('trip-savings-banner--pop');
+  window.setTimeout(() => el.classList.remove('trip-savings-banner--pop'), 600);
+}
+
 // --- Search history (localStorage: smartchoice_history) ---
 
 /** Load history array from localStorage */
@@ -344,7 +464,10 @@ function addToCart(item) {
       pair?.coles?.price ?? (item.supermarket === 'Coles' ? item.price : null),
     woolworthsUrl: pair?.woolworths?.url || (item.supermarket === 'Woolworths' ? item.url : ''),
     colesUrl: pair?.coles?.url || (item.supermarket === 'Coles' ? item.url : ''),
+    lineSaving: 0,
   };
+
+  cartItem.lineSaving = calcLineSavingForCartEntry(cartItem);
 
   cart.push(cartItem);
   saveCart(cart);
@@ -371,6 +494,7 @@ function removeFromCart(id) {
 
 function clearCart() {
   saveCart([]);
+  totalSaved = 0;
   renderCartPanel();
 }
 
@@ -385,6 +509,8 @@ function renderCartPanel() {
 
   if (!cart.length) {
     panel.classList.add('hidden');
+    totalSaved = 0;
+    renderTripSavingsBanner(document.getElementById('cart-trip-savings'), 0, 0);
     return;
   }
 
@@ -426,6 +552,8 @@ function renderCartPanel() {
     <p><strong>Woolworths total:</strong> $${woolworthsTotal.toFixed(2)} (${woolworthsCount} items)</p>
     <p><strong>Coles total:</strong> $${colesTotal.toFixed(2)} (${colesCount} items)</p>
   `;
+
+  updateCartSavingsDisplay();
 
   if (colesCount > 0 && woolworthsCount > 0) {
     const diff = Math.abs(colesTotal - woolworthsTotal);
@@ -517,7 +645,7 @@ window.searchByBarcode = searchByBarcode;
 
 /**
  * Unified search by product name or barcode.
- * Shows results and scrolls to Similar products when scanning.
+ * Shows results; scrolls to matched pairs when scanning barcode.
  */
 async function runCompareSearch({ keyword, barcode }) {
   // Single search / barcode → collapse AI panel (content preserved)
@@ -540,7 +668,7 @@ async function runCompareSearch({ keyword, barcode }) {
   colesCont.innerHTML = '<p class="loading">Loading...</p>';
   hideRevealSection(summarySection);
   hideRevealSection(matchedSection);
-  matchedResults.innerHTML = '';
+  if (matchedResults) matchedResults.innerHTML = '';
   removeBarcodeScanBanner();
 
   try {
@@ -573,6 +701,7 @@ function displayCompareResults(data, options = {}) {
   const summaryText = document.getElementById('summary-text');
   const matchedSection = document.getElementById('matched-section');
   const matchedResults = document.getElementById('matched-results');
+  const browseGrid = document.querySelector('.comparison-grid--browse');
 
   const items = Array.isArray(data) ? data : data.items || [];
   const similarPairs = Array.isArray(data?.similarPairs) ? data.similarPairs : [];
@@ -585,10 +714,15 @@ function displayCompareResults(data, options = {}) {
     showBarcodeScanBanner(data.scannedBarcode);
   }
 
-  renderStoreResults(wooliesCont, woolworths, 'Woolworths', data.storeErrors?.woolworths);
-  renderStoreResults(colesCont, coles, 'Coles', data.storeErrors?.coles);
   renderSummary(summaryText, summarySection, woolworths, coles, data);
   renderMatchedPairs(matchedResults, matchedSection, similarPairs);
+
+  renderStoreResults(wooliesCont, woolworths, 'Woolworths', data.storeErrors?.woolworths);
+  renderStoreResults(colesCont, coles, 'Coles', data.storeErrors?.coles);
+
+  if (browseGrid) {
+    browseGrid.classList.toggle('hidden', similarPairs.length > 0);
+  }
 
   if (options.fromBarcode && similarPairs.length) {
     matchedSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -602,7 +736,7 @@ function showBarcodeScanBanner(barcode) {
   const banner = document.createElement('p');
   banner.id = 'barcode-scan-banner';
   banner.className = 'barcode-scan-banner';
-  banner.textContent = `Barcode scanned: ${barcode} — showing matched product comparison below.`;
+  banner.textContent = `Barcode scanned: ${barcode} — showing matched products below.`;
   searchSection.appendChild(banner);
 }
 
@@ -643,6 +777,10 @@ function renderSummary(el, section, woolworths, coles, data = {}) {
   showRevealSection(section);
 }
 
+/**
+ * Cặp sản phẩm khớp nhau (Similar products) — so sánh chính xác hơn hai cột raw search.
+ * Mỗi bên có nút Add to list để cộng dồn tiết kiệm trong giỏ.
+ */
 function renderMatchedPairs(container, section, pairs) {
   if (!pairs.length) {
     hideRevealSection(section);
@@ -667,17 +805,23 @@ function renderMatchedPairs(container, section, pairs) {
         <p class="store-label woolies">Woolworths</p>
         ${buildLinkedImage(pair.woolworths)}
         ${buildProductTitleRow(pair.woolworths)}
-        ${buildPriceBlock(pair.woolworths)}
+        ${buildPriceBlockWithSaving(pair.woolworths, pair.coles.price, pair.woolworths.price)}
+        <button type="button" class="select-btn match-add-btn">Add to list</button>
       </div>
       <div class="match-vs">vs</div>
       <div class="match-side" data-store="coles">
         <p class="store-label coles">Coles</p>
         ${buildLinkedImage(pair.coles)}
         ${buildProductTitleRow(pair.coles)}
-        ${buildPriceBlock(pair.coles)}
+        ${buildPriceBlockWithSaving(pair.coles, pair.coles.price, pair.woolworths.price)}
+        <button type="button" class="select-btn match-add-btn">Add to list</button>
       </div>
       <div class="match-meta">${badge}<p class="save-text">Difference: $${pair.saving.toFixed(2)}</p></div>
     `;
+
+    const addButtons = row.querySelectorAll('.match-add-btn');
+    addButtons[0]?.addEventListener('click', () => addToCart(pair.woolworths));
+    addButtons[1]?.addEventListener('click', () => addToCart(pair.coles));
 
     bindWatchlistButtons(row, (watchId) => {
       if (getWatchlistProductId(pair.woolworths) === watchId) return pair.woolworths;
@@ -713,10 +857,19 @@ function renderStoreResults(container, products, storeName, storeError = '') {
     card.className = `product-card reveal-animate${isCheapest ? ' cheapest' : ''}`;
     card.style.animationDelay = `${Math.min(index * 0.04, 0.4)}s`;
 
+    const pair = findPairForItem(item);
+    const priceBlock = pair
+      ? buildPriceBlockWithSaving(
+          item,
+          pair.coles?.price,
+          pair.woolworths?.price
+        )
+      : buildPriceBlock(item);
+
     card.innerHTML = `
       ${buildLinkedImage(item, 'product-thumb')}
       ${buildProductTitleRow(item)}
-      ${buildPriceBlock(item)}
+      ${priceBlock}
       ${isCheapest ? '<p class="cheapest-label">Lowest price</p>' : ''}
       <button class="select-btn" type="button">Add to list</button>
     `;
@@ -1003,6 +1156,90 @@ function buildProductLink(url, innerHtml) {
 
 // --- AI Shopping List ---
 
+/** Timer giả lập % loading (API không trả progress thật) */
+let aiAnalyzeProgressTimer = null;
+
+/**
+ * Bắt đầu thanh loading dưới AI Shopping List — % tăng dần, màu xanh đậm hơn.
+ */
+function startAiAnalyzeProgress() {
+  const wrap = document.getElementById('ai-analyze-progress');
+  const fill = document.getElementById('ai-analyze-progress-fill');
+  const label = document.getElementById('ai-analyze-progress-label');
+  if (!wrap || !fill || !label) return;
+
+  stopAiAnalyzeProgress(false);
+
+  wrap.classList.remove('hidden');
+  wrap.setAttribute('aria-hidden', 'false');
+
+  let pct = 0;
+
+  const setProgress = (value) => {
+    pct = Math.min(100, Math.max(0, value));
+    fill.style.width = `${pct}%`;
+    label.textContent = `${Math.round(pct)}%`;
+    wrap.setAttribute('aria-valuenow', String(Math.round(pct)));
+
+    // Xanh nhạt (#93c5fd) → xanh đậm (#1d4ed8) theo %
+    const t = pct / 100;
+    const r = Math.round(147 + (29 - 147) * t);
+    const g = Math.round(197 + (78 - 197) * t);
+    const b = Math.round(253 + (216 - 253) * t);
+    fill.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+  };
+
+  setProgress(3);
+
+  aiAnalyzeProgressTimer = window.setInterval(() => {
+    if (pct >= 92) return;
+    const step = pct < 35 ? 2.8 : pct < 65 ? 1.4 : 0.45;
+    setProgress(pct + step);
+  }, 140);
+}
+
+/** Hoàn tất 100% rồi ẩn thanh loading */
+function finishAiAnalyzeProgress() {
+  const wrap = document.getElementById('ai-analyze-progress');
+  const fill = document.getElementById('ai-analyze-progress-fill');
+  const label = document.getElementById('ai-analyze-progress-label');
+
+  stopAiAnalyzeProgress(false);
+
+  if (fill && label && wrap) {
+    fill.style.width = '100%';
+    fill.style.backgroundColor = '#1d4ed8';
+    label.textContent = '100%';
+    wrap.setAttribute('aria-valuenow', '100');
+  }
+
+  window.setTimeout(() => stopAiAnalyzeProgress(true), 450);
+}
+
+/** Dừng timer và tùy chọn reset thanh về 0% */
+function stopAiAnalyzeProgress(reset = true) {
+  if (aiAnalyzeProgressTimer) {
+    clearInterval(aiAnalyzeProgressTimer);
+    aiAnalyzeProgressTimer = null;
+  }
+
+  if (!reset) return;
+
+  const wrap = document.getElementById('ai-analyze-progress');
+  const fill = document.getElementById('ai-analyze-progress-fill');
+  const label = document.getElementById('ai-analyze-progress-label');
+
+  wrap?.classList.add('hidden');
+  wrap?.setAttribute('aria-hidden', 'true');
+  wrap?.setAttribute('aria-valuenow', '0');
+
+  if (fill) {
+    fill.style.width = '0%';
+    fill.style.backgroundColor = '';
+  }
+  if (label) label.textContent = '0%';
+}
+
 async function analyzeShoppingList() {
   const textarea = document.getElementById('aiListInput');
   const btn = document.getElementById('analyzeListBtn');
@@ -1014,6 +1251,7 @@ async function analyzeShoppingList() {
   }
 
   btn.disabled = true;
+  startAiAnalyzeProgress();
   showAiAnalyzeResults();
   section.querySelector('#ai-parse-info').innerHTML = '<p class="loading">Analyzing with AI and fetching prices...</p>';
   section.querySelector('#ai-totals-grid').innerHTML = '';
@@ -1034,7 +1272,9 @@ async function analyzeShoppingList() {
     }
 
     renderAiShoppingResults(data);
+    finishAiAnalyzeProgress();
   } catch (err) {
+    stopAiAnalyzeProgress(true);
     section.querySelector('#ai-parse-info').innerHTML = `<p class="error">${escapeHtml(err.message || 'Analysis failed.')}</p>`;
   } finally {
     btn.disabled = false;
@@ -1234,7 +1474,8 @@ function renderAiLineItems(lineItems) {
             colesUsable
               ? `${buildAiProductPreview(line.coles, 'Coles')}
                  ${line.coles.pricingNote ? `<p class="pricing-note">${escapeHtml(line.coles.pricingNote)}</p>` : ''}
-                 <p class="ai-line-price">$${line.colesLinePrice.toFixed(2)}</p>`
+                 <p class="ai-line-price">$${line.colesLinePrice.toFixed(2)}</p>
+                 ${woolUsable ? buildItemSavingBadge(line.colesLinePrice, line.woolworthsLinePrice, 'Coles') : ''}`
               : line.colesIncomplete
                 ? `<p class="missing">No match</p>
                    <p class="ai-line-price imputed">$${(line.colesSingleStorePrice ?? 0).toFixed(2)}</p>
@@ -1248,7 +1489,8 @@ function renderAiLineItems(lineItems) {
             woolUsable
               ? `${buildAiProductPreview(line.woolworths, 'Woolworths')}
                  ${line.woolworths.pricingNote ? `<p class="pricing-note">${escapeHtml(line.woolworths.pricingNote)}</p>` : ''}
-                 <p class="ai-line-price">$${line.woolworthsLinePrice.toFixed(2)}</p>`
+                 <p class="ai-line-price">$${line.woolworthsLinePrice.toFixed(2)}</p>
+                 ${colesUsable ? buildItemSavingBadge(line.colesLinePrice, line.woolworthsLinePrice, 'Woolworths') : ''}`
               : line.woolIncomplete
                 ? `<p class="missing">No match</p>
                    <p class="ai-line-price imputed">$${(line.woolworthsSingleStorePrice ?? 0).toFixed(2)}</p>
