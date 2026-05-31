@@ -1,8 +1,8 @@
 /**
- * SmartChoice – Quét mã vạch (html5-qrcode CDN)
- * - Ưu tiên camera sau trên điện thoại (facingMode: environment)
- * - Fallback nhiều bước nếu thiết bị không hỗ trợ { exact: "environment" }
- * - Bắt lỗi từ chối quyền camera và hiển thị thông báo tiếng Việt
+ * SmartChoice – Barcode scanner (html5-qrcode bundled in public/html5-qrcode.min.js)
+ * - Prefer rear camera on phones (facingMode: environment)
+ * - Step through fallbacks when { exact: "environment" } is unsupported
+ * - Surface clear errors when camera permission is denied
  */
 
 (function initBarcodeScanner() {
@@ -13,13 +13,15 @@
   const closeBtn = document.getElementById('scanner-close-btn');
   const backdrop = document.getElementById('scanner-backdrop');
 
-  const PERMISSION_ALERT_VI =
-    'Ứng dụng cần quyền truy cập Camera để quét mã vạch. Vui lòng kiểm tra lại cài đặt trình duyệt của bạn nhé!';
+  const PERMISSION_ALERT =
+    'Camera access is required to scan barcodes. Please allow camera permission in your browser settings and try again.';
 
   if (!modal || !readerEl || typeof Html5Qrcode === 'undefined') {
     if (openBtn) {
       openBtn.addEventListener('click', () => {
-        alert('Không tải được thư viện quét mã. Kiểm tra kết nối mạng và tải lại trang.');
+        alert(
+          'The barcode scanner library did not load. Ensure public/html5-qrcode.min.js exists and refresh the page.'
+        );
       });
     }
     return;
@@ -230,7 +232,7 @@
     console.error('Scanner start error:', error);
 
     if (isCameraPermissionDenied(error)) {
-      alert(PERMISSION_ALERT_VI);
+      alert(PERMISSION_ALERT);
       setStatus('Cần quyền Camera để quét mã vạch.', true);
       return;
     }

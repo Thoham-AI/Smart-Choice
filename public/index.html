@@ -11,7 +11,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=3">
+    <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
     <div class="app-container">
@@ -32,6 +32,39 @@
             </div>
             <p class="tagline">Real-time grocery price comparison</p>
         </header>
+
+        <!-- Location: in-app consent first; browser Geolocation runs only after "Share location". -->
+        <div
+            id="location-consent-notice"
+            class="location-notice"
+            role="region"
+            aria-labelledby="location-notice-heading"
+            aria-live="polite"
+        >
+            <span class="location-notice-icon" aria-hidden="true">📍</span>
+            <div class="location-notice-body">
+                <p id="location-notice-heading" class="location-notice-heading">Local store prices</p>
+                <p id="location-notice-text" class="location-notice-text">
+                    Agree to share your location so we can update prices at the supermarkets nearest to you.
+                </p>
+                <div id="location-consent-actions" class="location-consent-actions">
+                    <button
+                        type="button"
+                        id="location-allow-btn"
+                        class="location-btn location-btn--primary"
+                    >
+                        Share location
+                    </button>
+                    <button
+                        type="button"
+                        id="location-decline-btn"
+                        class="location-btn location-btn--ghost"
+                    >
+                        Not now
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <nav class="main-tabs" aria-label="Main navigation">
             <button type="button" class="main-tab active" data-tab="compare">Compare Prices</button>
@@ -127,6 +160,14 @@
             </button>
             <div id="ai-results-body" class="ai-results-body">
                 <h2>Smart cart breakdown</h2>
+                <button
+                    type="button"
+                    id="export-ai-pdf-btn"
+                    class="export-pdf-btn export-pdf-btn--ai"
+                    title="Download your AI shopping list as PDF (free Beta)"
+                >
+                    Export shopping list (PDF)
+                </button>
                 <div id="ai-parse-info" class="ai-parse-info"></div>
                 <div id="ai-totals-grid" class="ai-totals-grid"></div>
                 <p id="ai-savings-banner" class="ai-savings-banner"></p>
@@ -170,7 +211,7 @@
 
         <section id="panel-watchlist" class="tab-panel watchlist-panel hidden">
             <h2>Your price watchlist</h2>
-            <p class="watchlist-intro">Products you marked with 🔔 are refreshed with the latest store prices.</p>
+            <p class="watchlist-intro">Products you marked with 🔔 are refreshed with the latest store prices. Tap a card to expand its price history chart.</p>
             <button type="button" id="refresh-watchlist-btn" class="refresh-watchlist-btn">Refresh prices</button>
             <div id="watchlist-status" class="watchlist-status"></div>
             <div id="watchlist-grid" class="watchlist-grid"></div>
@@ -182,6 +223,14 @@
             <div id="cart-items" class="cart-items"></div>
             <div id="cart-totals" class="cart-totals"></div>
             <p id="cart-savings" class="cart-savings"></p>
+            <button
+                type="button"
+                id="export-cart-pdf-btn"
+                class="export-pdf-btn"
+                title="Download your cart as a PDF shopping list (free Beta)"
+            >
+                Export shopping list (PDF)
+            </button>
             <button type="button" id="clear-cart" class="clear-cart-btn">Clear cart</button>
         </aside>
 
@@ -194,9 +243,14 @@
         </footer>
     </div>
 
-    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-    <script src="script.js?v=34"></script>
-    <script src="barcode-scanner.js?v=3"></script>
+    <!-- Barcode scanner library (bundled locally under public/) -->
+    <script src="/html5-qrcode.min.js"></script>
+    <!-- Chart.js + jsPDF, then app.js (watchlist/PDF), then script.js (main UI) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+    <script src="app.js?v=1"></script>
+    <script src="script.js?v=38"></script>
+    <script src="barcode-scanner.js?v=4"></script>
 
     <!--
       Vercel Web Analytics + Speed Insights (chỉ hoạt động khi deploy trên Vercel).

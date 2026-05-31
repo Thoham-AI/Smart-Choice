@@ -9,9 +9,242 @@ const WATCHLIST_STORAGE_KEY = 'smartchoice_watchlist';
 const THEME_STORAGE_KEY = 'smartchoice_theme';
 const HISTORY_STORAGE_KEY = 'smartchoice_history';
 const HISTORY_MAX_ITEMS = 5;
+/** Persists in-app location choice so the banner does not reappear every visit. */
+const LOCATION_CONSENT_STORAGE_KEY = 'smartchoice_location_consent';
+
+/** Sydney CBD fallback when the user declines GPS or the browser cannot provide it. */
+const DEFAULT_SYDNEY_LOCATION = {
+  latitude: -33.8688,
+  longitude: 151.2093,
+};
+
+/** Copy shown before the user chooses Share location / Not now. */
+const LOCATION_CONSENT_MESSAGE =
+  'Agree to share your location so we can update prices at the supermarkets nearest to you.';
+
+/**
+ * Coordinates forwarded on every API call (headers + query).
+ * `ready` is false until the user taps Share location or Not now.
+ * `source` is "pending" until a choice is made; never calls GPS before consent.
+ */
+let userLocation = {
+  latitude: DEFAULT_SYDNEY_LOCATION.latitude,
+  longitude: DEFAULT_SYDNEY_LOCATION.longitude,
+  source: 'pending',
+  ready: false,
+};
+
+/** True while navigator.geolocation.getCurrentPosition is in flight after consent. */
+let locationRequestInFlight = false;
 
 /** Tổng tiền tiết kiệm tích lũy trong giỏ (cộng dồn mỗi lần Add to cart) */
 let totalSaved = 0;
+
+// --- Geolocation (explicit in-app consent, then browser API) ---
+
+/**
+ * Restore a previous Share / Not now choice from localStorage (skips the banner).
+ */
+function loadSavedLocationConsent() {
+  try {
+    const raw = localStorage.getItem(LOCATION_CONSENT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ready) return null;
+    const lat = Number(parsed.latitude);
+    const lng = Number(parsed.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return {
+      latitude: lat,
+      longitude: lng,
+      source: parsed.source === 'gps' ? 'gps' : 'default',
+      ready: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveLocationConsentChoice() {
+  try {
+    localStorage.setItem(
+      LOCATION_CONSENT_STORAGE_KEY,
+      JSON.stringify({
+        latitude: userLocation.latitude,
+        longitude: userLocation.longitude,
+        source: userLocation.source,
+        ready: true,
+      })
+    );
+  } catch {
+    /* private mode / quota — banner still dismisses */
+  }
+}
+
+/**
+ * Remove the location banner from view after the user has chosen Share or Not now.
+ */
+function dismissLocationConsentBanner() {
+  const notice = document.getElementById('location-consent-notice');
+  if (!notice || notice.classList.contains('location-notice--dismissed')) return;
+
+  notice.classList.add('location-notice--dismissing');
+
+  const finish = () => {
+    notice.classList.add('location-notice--dismissed');
+    notice.hidden = true;
+    notice.setAttribute('aria-hidden', 'true');
+  };
+
+  notice.addEventListener('transitionend', finish, { once: true });
+  window.setTimeout(finish, 450);
+}
+
+/**
+ * Wire the location banner buttons. Does not touch the Geolocation API until the user agrees.
+ */
+function initLocationConsentUi() {
+  const saved = loadSavedLocationConsent();
+  if (saved) {
+    userLocation = saved;
+    dismissLocationConsentBanner();
+    return;
+  }
+
+  const allowBtn = document.getElementById('location-allow-btn');
+  const declineBtn = document.getElementById('location-decline-btn');
+
+  allowBtn?.addEventListener('click', onLocationConsentAllow);
+  declineBtn?.addEventListener('click', onLocationConsentDecline);
+
+  updateLocationNoticeUi();
+}
+
+/** User agreed in-app → request browser GPS (second permission layer). */
+function onLocationConsentAllow() {
+  if (userLocation.ready || locationRequestInFlight) return;
+
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    applyDefaultUserLocation('unsupported');
+    return;
+  }
+
+  locationRequestInFlight = true;
+  setLocationConsentButtonsDisabled(true);
+  dismissLocationConsentBanner();
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      locationRequestInFlight = false;
+      userLocation = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        source: 'gps',
+        ready: true,
+      };
+      finalizeLocationConsentUi();
+    },
+    () => {
+      locationRequestInFlight = false;
+      applyDefaultUserLocation('denied');
+    },
+    {
+      enableHighAccuracy: false,
+      timeout: 8000,
+      maximumAge: 5 * 60 * 1000,
+    }
+  );
+}
+
+/** User declined in-app → use Sydney default; do not call the Geolocation API. */
+function onLocationConsentDecline() {
+  if (userLocation.ready || locationRequestInFlight) return;
+  dismissLocationConsentBanner();
+  applyDefaultUserLocation('declined');
+}
+
+/** Apply Sydney defaults after decline, denial, or unsupported browsers. */
+function applyDefaultUserLocation(_reason) {
+  userLocation = {
+    latitude: DEFAULT_SYDNEY_LOCATION.latitude,
+    longitude: DEFAULT_SYDNEY_LOCATION.longitude,
+    source: 'default',
+    ready: true,
+  };
+  finalizeLocationConsentUi();
+}
+
+/** Persist choice, tear down banner UI (no lingering status strip). */
+function finalizeLocationConsentUi() {
+  setLocationConsentButtonsDisabled(false);
+  saveLocationConsentChoice();
+  dismissLocationConsentBanner();
+}
+
+function setLocationConsentButtonsDisabled(disabled) {
+  const allowBtn = document.getElementById('location-allow-btn');
+  const declineBtn = document.getElementById('location-decline-btn');
+  if (allowBtn) allowBtn.disabled = disabled;
+  if (declineBtn) declineBtn.disabled = disabled;
+}
+
+/** Headers attached to every SmartChoice API request. */
+function getLocationRequestHeaders() {
+  return {
+    'X-Latitude': String(userLocation.latitude),
+    'X-Longitude': String(userLocation.longitude),
+    'X-Location-Source': userLocation.source || 'default',
+  };
+}
+
+/**
+ * Append latitude/longitude query params (in addition to headers) for GET routes.
+ * @param {string} pathWithQuery - e.g. "/api/compare?keyword=milk"
+ */
+function buildApiUrl(pathWithQuery) {
+  const url = new URL(pathWithQuery, API_BASE);
+  url.searchParams.set('latitude', String(userLocation.latitude));
+  url.searchParams.set('longitude', String(userLocation.longitude));
+  return url.toString();
+}
+
+/**
+ * fetch() wrapper: always forwards the latest known coordinates to the backend.
+ */
+async function apiFetch(url, options = {}) {
+  const headers = {
+    ...getLocationRequestHeaders(),
+    ...(options.headers || {}),
+  };
+  return fetch(url, { ...options, headers });
+}
+
+/**
+ * Update banner copy. Pass optionalMessage to override auto text (e.g. while waiting on GPS).
+ */
+function updateLocationNoticeUi(optionalMessage) {
+  const textEl = document.getElementById('location-notice-text');
+  if (!textEl) return;
+
+  if (optionalMessage) {
+    textEl.textContent = optionalMessage;
+    return;
+  }
+
+  if (!userLocation.ready) {
+    textEl.textContent = LOCATION_CONSENT_MESSAGE;
+    return;
+  }
+
+  if (userLocation.source === 'gps') {
+    textEl.textContent =
+      'Using your location to show prices from supermarkets near you.';
+    return;
+  }
+
+  textEl.textContent =
+    'Showing prices using Sydney, NSW as the default area. You can reload the page to share location later.';
+}
 
 // --- Tiết kiệm / gamification (so sánh Coles vs Woolworths) ---
 
@@ -785,8 +1018,8 @@ async function runCompareSearch({ keyword, barcode }) {
   const searchBtn = document.getElementById('searchBtn');
 
   const url = barcode
-    ? `${API_BASE}/api/compare/barcode?barcode=${encodeURIComponent(barcode)}`
-    : `${API_BASE}/api/compare?keyword=${encodeURIComponent(keyword)}`;
+    ? buildApiUrl(`/api/compare/barcode?barcode=${encodeURIComponent(barcode)}`)
+    : buildApiUrl(`/api/compare?keyword=${encodeURIComponent(keyword)}`);
 
   searchBtn.disabled = true;
   wooliesCont.innerHTML = '<p class="loading">Loading...</p>';
@@ -797,7 +1030,7 @@ async function runCompareSearch({ keyword, barcode }) {
   removeBarcodeScanBanner();
 
   try {
-    const response = await fetch(url);
+    const response = await apiFetch(url);
     const data = await response.json();
 
     if (!response.ok) {
@@ -1119,6 +1352,7 @@ document.getElementById('clear-history-btn')?.addEventListener('click', () => {
 });
 
 initTheme();
+initLocationConsentUi();
 initMainTabs();
 updateWatchlistTabBadge();
 renderRecentSearches();
@@ -1177,7 +1411,7 @@ async function refreshWatchlistPrices() {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/api/watchlist/refresh`, {
+    const response = await apiFetch(`${API_BASE}/api/watchlist/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items: list }),
@@ -1188,6 +1422,8 @@ async function refreshWatchlistPrices() {
       throw new Error(data.error || 'Could not refresh prices.');
     }
 
+    const mergedList = mergeWatchlistRefreshIntoStorage(list, data.results || []);
+    saveWatchlist(mergedList);
     renderWatchlistPanel(data.results || []);
     if (statusEl) {
       statusEl.textContent = `Updated at ${new Date().toLocaleTimeString('en-AU')}.`;
@@ -1202,13 +1438,41 @@ async function refreshWatchlistPrices() {
   }
 }
 
-/** Render watchlist; refreshResults maps id → latest price from API */
+/** Persist latest dual-store prices from a refresh response into localStorage. */
+function mergeWatchlistRefreshIntoStorage(list, refreshResults) {
+  const map = new Map();
+  if (Array.isArray(refreshResults)) {
+    refreshResults.forEach((r) => map.set(r.id, r));
+  }
+  return list.map((entry) => {
+    const fresh = map.get(entry.id);
+    if (!fresh) return entry;
+    return {
+      ...entry,
+      lastColesPrice:
+        fresh.colesPrice != null ? fresh.colesPrice : entry.lastColesPrice ?? null,
+      lastWoolworthsPrice:
+        fresh.woolworthsPrice != null ? fresh.woolworthsPrice : entry.lastWoolworthsPrice ?? null,
+      lastCurrentPrice:
+        fresh.currentPrice != null ? fresh.currentPrice : entry.lastCurrentPrice ?? null,
+    };
+  });
+}
+
+function formatWatchlistStorePrice(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? `$${n.toFixed(2)}` : '—';
+}
+
+/** Render watchlist accordion cards; refreshResults maps id → latest API row */
 function renderWatchlistPanel(refreshResults = null) {
   const grid = document.getElementById('watchlist-grid');
   if (!grid) return;
 
   const list = loadWatchlist();
   updateWatchlistTabBadge();
+
+  window.SmartChoiceApp?.destroyAllWatchlistCharts?.();
 
   if (!list.length) {
     grid.innerHTML = `
@@ -1228,7 +1492,14 @@ function renderWatchlistPanel(refreshResults = null) {
 
   list.forEach((entry) => {
     const fresh = resultMap.get(entry.id);
-    const currentPrice = fresh?.found ? fresh.currentPrice : null;
+    const colesPrice =
+      fresh?.colesPrice != null ? fresh.colesPrice : entry.lastColesPrice ?? null;
+    const woolworthsPrice =
+      fresh?.woolworthsPrice != null ? fresh.woolworthsPrice : entry.lastWoolworthsPrice ?? null;
+    const currentPrice =
+      fresh?.found && fresh.currentPrice != null
+        ? fresh.currentPrice
+        : entry.lastCurrentPrice ?? null;
     const watchedPrice = Number(entry.watchedAtPrice);
     const priceDrop =
       fresh?.isPriceDown && fresh.priceDrop > 0
@@ -1240,43 +1511,71 @@ function renderWatchlistPanel(refreshResults = null) {
 
     const card = document.createElement('article');
     card.className = `watchlist-card${isPriceDown ? ' price-down' : ''}`;
-    const storeClass = entry.supermarket === 'Coles' ? 'coles' : 'woolies';
+    card.dataset.watchId = entry.id;
 
     const dropTag = isPriceDown
       ? `<span class="price-drop-tag">PRICE DROP! Down $${priceDrop.toFixed(2)} since you started watching</span>`
       : '';
 
-    const priceBlock =
+    const watchedHint =
       currentPrice != null
-        ? `
-        <p class="watch-price-current">Current price: <strong>$${currentPrice.toFixed(2)}</strong></p>
-        <p class="watch-price-was">Price when added: $${watchedPrice.toFixed(2)}</p>
-      `
-        : `<p class="watch-price-was">Price when added: $${watchedPrice.toFixed(2)}</p>
-           <p class="watch-price-pending">${fresh?.error ? escapeHtml(fresh.error) : 'Click "Refresh prices" to fetch the latest price.'}</p>`;
+        ? `<p class="watch-price-was">Watched at ${entry.supermarket}: $${watchedPrice.toFixed(2)} · now $${currentPrice.toFixed(2)}</p>`
+        : `<p class="watch-price-pending">${
+            fresh?.error
+              ? escapeHtml(fresh.error)
+              : 'Tap "Refresh prices", then expand for price history.'
+          }</p>`;
 
     card.innerHTML = `
       ${dropTag}
-      <div class="watchlist-card-head">
-        ${buildProductLink(
-          entry.url,
-          buildSafeImageTag(entry.image, entry.name, 'watchlist-thumb')
-        )}
-        <div class="watchlist-card-body">
-          <span class="watch-store ${storeClass}">${escapeHtml(entry.supermarket)}</span>
-          <h3 class="watch-name">${buildProductLink(entry.url, escapeHtml(entry.name))}</h3>
-          ${priceBlock}
+      <div
+        class="watchlist-card-summary"
+        role="button"
+        tabindex="0"
+        aria-expanded="false"
+        aria-label="Toggle price history for ${escapeHtml(entry.name)}"
+      >
+        <div class="watchlist-card-head">
+          ${buildProductLink(
+            entry.url,
+            buildSafeImageTag(entry.image, entry.name, 'watchlist-thumb')
+          )}
+          <div class="watchlist-card-body">
+            <h3 class="watch-name">${buildProductLink(entry.url, escapeHtml(entry.name))}</h3>
+            <div class="watch-dual-prices" aria-label="Store prices">
+              <span class="watch-dual-price watch-dual-price--ww">
+                <span class="watch-dual-label">Woolworths</span>
+                <strong>${formatWatchlistStorePrice(woolworthsPrice)}</strong>
+              </span>
+              <span class="watch-dual-price watch-dual-price--coles">
+                <span class="watch-dual-label">Coles</span>
+                <strong>${formatWatchlistStorePrice(colesPrice)}</strong>
+              </span>
+            </div>
+            ${watchedHint}
+          </div>
+          <span class="watchlist-chevron" aria-hidden="true"></span>
+          <button type="button" class="watchlist-remove" data-watch-id="${escapeHtml(entry.id)}" title="Remove from watchlist">✕</button>
         </div>
-        <button type="button" class="watchlist-remove" data-watch-id="${escapeHtml(entry.id)}" title="Remove from watchlist">✕</button>
+      </div>
+      <div class="price-chart-container" hidden>
+        <p class="price-chart-status" hidden></p>
+        <div class="price-chart-canvas-wrap">
+          <canvas class="watchlist-canvas" aria-label="Price history chart"></canvas>
+        </div>
       </div>
     `;
 
-    card.querySelector('.watchlist-remove').addEventListener('click', () => {
+    card.querySelector('.watchlist-remove').addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.SmartChoiceApp?.destroyWatchlistChart?.(entry.id);
       saveWatchlist(loadWatchlist().filter((w) => w.id !== entry.id));
       updateWatchlistTabBadge();
       syncWatchlistBellButtons();
       renderWatchlistPanel(refreshResults);
     });
+
+    window.SmartChoiceApp?.attachWatchlistCard?.(card, entry);
 
     grid.appendChild(card);
   });
@@ -1396,7 +1695,7 @@ async function analyzeShoppingList() {
   section.querySelector('#ai-line-items').innerHTML = '';
 
   try {
-    const response = await fetch(`${API_BASE}/api/analyze-prompt`, {
+    const response = await apiFetch(`${API_BASE}/api/analyze-prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt }),
@@ -1420,6 +1719,9 @@ async function analyzeShoppingList() {
 function renderAiShoppingResults(data) {
   const { parsedItems, lineItems, optimization, parseSource } = data;
   const opt = optimization || {};
+
+  /** Snapshot for PDF export (public/app.js). */
+  window.lastAiShoppingExportData = data;
 
   showAiAnalyzeResults();
 

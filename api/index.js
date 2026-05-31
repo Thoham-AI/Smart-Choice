@@ -12,6 +12,7 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const express = require('express');
 const axios   = require('axios');
 const cors    = require('cors');
+const { AsyncLocalStorage } = require('async_hooks');
 const { MongoClient } = require('mongodb');
 const OpenAI = require('openai');
 const stringSimilarity = require('string-similarity');
@@ -34,6 +35,20 @@ const API_TIMEOUT_MS = 60000; // Một số request RapidAPI có thể chậm
 const API_MAX_RETRIES = 2;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
+/** Default map centre (Sydney CBD) when the client does not share GPS coordinates. */
+const SYDNEY_DEFAULT_LOCATION = {
+  latitude: -33.8688,
+  longitude: 151.2093,
+  source: 'default',
+};
+
+/** Per-request user coordinates (set by middleware from headers / query / body). */
+const requestLocationContext = new AsyncLocalStorage();
+
+/** In-memory cache for nearest store IDs resolved from lat/lng (1 hour TTL). */
+const nearestStoreIdCache = new Map();
+const NEAREST_STORE_CACHE_TTL_MS = 60 * 60 * 1000;
+
 const openaiClient = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
@@ -44,6 +59,8 @@ const openaiClient = process.env.OPENAI_API_KEY
 const MONGODB_URI = String(process.env.MONGODB_URI || '').trim();
 const DEFAULT_DB_NAME = 'smartchoice';
 const API_CACHE_COLLECTION = 'api_cache';
+const PRICE_HISTORY_COLLECTION = 'price_history';
+const PRICE_HISTORY_MAX_POINTS = 90;
 const API_CACHE_TTL_MS =
   Number(process.env.API_CACHE_TTL_MINUTES) > 0
     ? Number(process.env.API_CACHE_TTL_MINUTES) * 60 * 1000
@@ -90,6 +107,10 @@ async function connectMongo() {
       { expiresAt: 1 },
       { expireAfterSeconds: 0, name: 'api_cache_ttl' }
     );
+    await mongoDb.collection(PRICE_HISTORY_COLLECTION).createIndex(
+      { watchId: 1, supermarket: 1 },
+      { name: 'price_history_watch_store' }
+    );
     return mongoDb;
   })();
 
@@ -108,27 +129,158 @@ function getApiCacheCollection() {
   return mongoDb.collection(API_CACHE_COLLECTION);
 }
 
-function buildApiCacheId(supermarket, keyword) {
-  return `${supermarket}:${String(keyword || '').trim().toLowerCase()}`;
+function getPriceHistoryCollection() {
+  if (!mongoDb) return null;
+  return mongoDb.collection(PRICE_HISTORY_COLLECTION);
 }
 
-async function readApiCache(supermarket, keyword) {
+function buildPriceHistoryId(watchId, supermarket) {
+  return `${String(watchId)}::${supermarket}`;
+}
+
+/**
+ * Append or update today's price point for a watchlist product (one point per calendar day).
+ */
+async function recordPriceHistoryPoint(watchId, supermarket, price, productName = '') {
+  const collection = getPriceHistoryCollection();
+  if (!collection) return;
+
+  const numericPrice = Number(price);
+  if (!watchId || !supermarket || !Number.isFinite(numericPrice) || numericPrice <= 0) {
+    return;
+  }
+
+  const _id = buildPriceHistoryId(watchId, supermarket);
+  const today = new Date().toISOString().slice(0, 10);
+  const existing = await collection.findOne({ _id });
+  const points = Array.isArray(existing?.points) ? [...existing.points] : [];
+  const last = points[points.length - 1];
+
+  if (last && last.date === today) {
+    last.price = Number(numericPrice.toFixed(2));
+  } else {
+    points.push({ date: today, price: Number(numericPrice.toFixed(2)) });
+  }
+
+  const trimmed = points.slice(-PRICE_HISTORY_MAX_POINTS);
+  await collection.updateOne(
+    { _id },
+    {
+      $set: {
+        watchId: String(watchId),
+        supermarket,
+        productName: String(productName || existing?.productName || '').trim(),
+        points: trimmed,
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+/** Load Coles + Woolworths price series for a watchlist entry. */
+async function getPriceHistoryForWatch(watchId) {
+  const collection = getPriceHistoryCollection();
+  if (!collection) return [];
+
+  const docs = await collection
+    .find({ watchId: String(watchId) })
+    .toArray();
+
+  return docs.map((doc) => ({
+    supermarket: doc.supermarket,
+    points: Array.isArray(doc.points) ? doc.points : [],
+  }));
+}
+
+function roundGeoCoord(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Number(n.toFixed(4));
+}
+
+/**
+ * Read latitude/longitude from the incoming request (headers preferred, then query, then JSON body).
+ * Falls back to Sydney CBD when coordinates are missing or invalid.
+ */
+function parseUserLocationFromRequest(req) {
+  const readNumber = (...candidates) => {
+    for (const raw of candidates) {
+      if (raw == null || raw === '') continue;
+      const n = Number(raw);
+      if (Number.isFinite(n) && Math.abs(n) <= 180) return n;
+    }
+    return null;
+  };
+
+  const latitude = readNumber(
+    req.headers['x-latitude'],
+    req.headers['x-lat'],
+    req.query?.latitude,
+    req.query?.lat,
+    req.body?.latitude,
+    req.body?.lat
+  );
+  const longitude = readNumber(
+    req.headers['x-longitude'],
+    req.headers['x-lng'],
+    req.headers['x-lon'],
+    req.query?.longitude,
+    req.query?.lng,
+    req.query?.lon,
+    req.body?.longitude,
+    req.body?.lng,
+    req.body?.lon
+  );
+
+  if (latitude != null && longitude != null) {
+    const sourceHeader = String(req.headers['x-location-source'] || '').trim().toLowerCase();
+    const source =
+      sourceHeader === 'gps' || sourceHeader === 'default' ? sourceHeader : 'client';
+    return {
+      latitude: roundGeoCoord(latitude),
+      longitude: roundGeoCoord(longitude),
+      source,
+    };
+  }
+
+  return { ...SYDNEY_DEFAULT_LOCATION };
+}
+
+/** Active coordinates for the current HTTP request (AsyncLocalStorage). */
+function getRequestLocation() {
+  return requestLocationContext.getStore()?.location || { ...SYDNEY_DEFAULT_LOCATION };
+}
+
+function buildLocationSegment(location) {
+  const loc = location || getRequestLocation();
+  return `${loc.latitude},${loc.longitude}`;
+}
+
+function buildApiCacheId(supermarket, keyword, location) {
+  const locKey = buildLocationSegment(location);
+  return `${supermarket}:${String(keyword || '').trim().toLowerCase()}:${locKey}`;
+}
+
+async function readApiCache(supermarket, keyword, location) {
   const collection = getApiCacheCollection();
   if (!collection) return null;
 
-  const doc = await collection.findOne({ _id: buildApiCacheId(supermarket, keyword) });
+  const doc = await collection.findOne({
+    _id: buildApiCacheId(supermarket, keyword, location),
+  });
   if (!doc?.payload) return null;
   if (doc.expiresAt && doc.expiresAt <= new Date()) return null;
   return doc.payload;
 }
 
-async function writeApiCache(supermarket, keyword, payload) {
+async function writeApiCache(supermarket, keyword, payload, location) {
   const collection = getApiCacheCollection();
   if (!collection) return;
 
   const now = new Date();
   await collection.updateOne(
-    { _id: buildApiCacheId(supermarket, keyword) },
+    { _id: buildApiCacheId(supermarket, keyword, location) },
     {
       $set: {
         supermarket,
@@ -158,6 +310,11 @@ async function initMongoForLocalStartup() {
 const app = express();
 app.use(cors());                       // Cho phép front-end trên origin khác gọi vào
 app.use(express.json({ limit: '32kb' }));
+// Attach parsed user coordinates to the async context for downstream RapidAPI calls.
+app.use((req, _res, next) => {
+  const location = parseUserLocationFromRequest(req);
+  requestLocationContext.run({ location }, () => next());
+});
 // Tắt cache để tránh trình duyệt dùng JS/API cũ gây hiển thị dữ liệu "fake"
 app.use((_req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -2852,7 +3009,186 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
 }
 
 // ============================================================
-// 5. HÀM GỌI COLES / WOOLWORTHS RAPIDAPI
+// 5. GEOLOCATION → NEAREST STORE + RAPIDAPI SEARCH
+// ============================================================
+
+function extractStoreIdFromPayload(payload) {
+  if (payload == null) return null;
+
+  if (typeof payload === 'string' || typeof payload === 'number') {
+    const digits = String(payload).replace(/\D/g, '');
+    return digits.length >= 3 ? digits : null;
+  }
+
+  const direct =
+    payload.storeId ??
+    payload.store_id ??
+    payload.storeNo ??
+    payload.storeNumber ??
+    payload.StoreNumber ??
+    payload.id;
+  if (direct != null && String(direct).trim()) return String(direct).trim();
+
+  const list =
+    payload.stores ??
+    payload.Stores ??
+    payload.locations ??
+    payload.Locations ??
+    payload.results ??
+    payload.data;
+  if (Array.isArray(list) && list.length) {
+    return extractStoreIdFromPayload(list[0]);
+  }
+
+  return null;
+}
+
+/** Try optional RapidAPI store-locator paths on the same supermarket host. */
+async function tryRapidApiNearestStoreId(supermarket, location) {
+  if (!RAPIDAPI_KEY) return null;
+
+  const isColes = supermarket === 'Coles';
+  const host = isColes ? COLES_HOST : WOOLWORTHS_HOST;
+  const paths = isColes
+    ? ['/coles/stores/nearby', '/coles/stores', '/coles/store-locator']
+    : [
+        '/woolworths/stores/nearby',
+        '/woolworths/stores',
+        '/woolworths/store-locator',
+      ];
+
+  for (const path of paths) {
+    try {
+      const response = await axios.get(`https://${host}${path}`, {
+        params: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          lat: location.latitude,
+          lng: location.longitude,
+          range: 25,
+          max: 3,
+        },
+        headers: {
+          'x-rapidapi-key': RAPIDAPI_KEY,
+          'x-rapidapi-host': host,
+        },
+        timeout: 15000,
+      });
+      const storeId = extractStoreIdFromPayload(response.data);
+      if (storeId) return storeId;
+    } catch {
+      // Host may not expose a store endpoint; continue to public locators.
+    }
+  }
+
+  return null;
+}
+
+/** Resolve the nearest Coles store number via the public store-locator service. */
+async function resolveColesStoreId(location) {
+  try {
+    const response = await axios.get(
+      'http://locator.coles.com.au/services/storelocator.asmx/GetLocationsNearGeoPoint',
+      {
+        params: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+        },
+        timeout: 12000,
+        responseType: 'text',
+      }
+    );
+    const xml = String(response.data || '');
+    const match =
+      xml.match(/<StoreNo[^>]*>(\d+)<\/StoreNo>/i) ||
+      xml.match(/<storeno[^>]*>(\d+)<\/storeno>/i);
+    if (match) return match[1];
+  } catch (error) {
+    console.warn('  ⚠ Coles store locator failed:', error.message);
+  }
+
+  return tryRapidApiNearestStoreId('Coles', location);
+}
+
+/** Resolve the nearest Woolworths store number via the public proximity service. */
+async function resolveWoolworthsStoreId(location) {
+  const divisions = ['SUPERMARKETS', 'WOOLWORTHS', 'supermarkets'];
+
+  for (const division of divisions) {
+    try {
+      const url =
+        `https://www.woolworths.com.au/storelocator/service/proximity/${division}` +
+        `/latitude/${location.latitude}/longitude/${location.longitude}/range/25/max/3`;
+      const response = await axios.get(url, {
+        timeout: 12000,
+        headers: { Accept: 'application/json, text/plain, */*' },
+      });
+      const storeId = extractStoreIdFromPayload(response.data);
+      if (storeId) return storeId;
+    } catch {
+      // Try the next division slug if this one is not recognised.
+    }
+  }
+
+  return tryRapidApiNearestStoreId('Woolworths', location);
+}
+
+/**
+ * Resolve (and cache) nearest Coles / Woolworths store IDs for the user's coordinates.
+ * Used to scope RapidAPI catalog pricing to the local area.
+ */
+async function resolveNearestStoreIds(location) {
+  const cacheKey = buildLocationSegment(location);
+  const cached = nearestStoreIdCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached;
+  }
+
+  const [colesStoreId, woolworthsStoreId] = await Promise.all([
+    resolveColesStoreId(location),
+    resolveWoolworthsStoreId(location),
+  ]);
+
+  const entry = {
+    colesStoreId,
+    woolworthsStoreId,
+    expiresAt: Date.now() + NEAREST_STORE_CACHE_TTL_MS,
+  };
+  nearestStoreIdCache.set(cacheKey, entry);
+
+  if (colesStoreId || woolworthsStoreId) {
+    console.log(
+      `  🏪 Nearest stores @ ${cacheKey}: Coles=${colesStoreId || 'n/a'} | WW=${woolworthsStoreId || 'n/a'}`
+    );
+  }
+
+  return entry;
+}
+
+/** Build RapidAPI query params including geo coordinates and optional storeId. */
+function buildStoreSearchParams(supermarket, query, location, storeIds) {
+  const params = {
+    query,
+    page: 1,
+    latitude: location.latitude,
+    longitude: location.longitude,
+    lat: location.latitude,
+    lng: location.longitude,
+  };
+
+  if (supermarket === 'Coles' && storeIds?.colesStoreId) {
+    params.storeId = storeIds.colesStoreId;
+  }
+  if (supermarket === 'Woolworths' && storeIds?.woolworthsStoreId) {
+    params.storeId = storeIds.woolworthsStoreId;
+    params.storeNumber = storeIds.woolworthsStoreId;
+  }
+
+  return params;
+}
+
+// ============================================================
+// 5b. HÀM GỌI COLES / WOOLWORTHS RAPIDAPI
 // ============================================================
 
 /** Gọi search API và trả về mảng sản phẩm thô (dùng cho khớp barcode) */
@@ -2866,27 +3202,37 @@ async function fetchStoreRawList(supermarket, keyword) {
   const query = String(keyword || '').trim();
   if (!query) return [];
 
+  const location = getRequestLocation();
+
   try {
     await connectMongo();
-    const cached = await readApiCache(supermarket, query);
+    const cached = await readApiCache(supermarket, query, location);
     if (cached != null) {
-      console.log(`  💾 ${supermarket} cache hit: "${query}"`);
+      console.log(`  💾 ${supermarket} cache hit: "${query}" @ ${buildLocationSegment(location)}`);
       return cached;
     }
   } catch (cacheErr) {
     console.warn(`  ⚠ MongoDB cache read failed (${supermarket}):`, cacheErr.message);
   }
 
+  let storeIds = { colesStoreId: null, woolworthsStoreId: null };
+  try {
+    storeIds = await resolveNearestStoreIds(location);
+  } catch (storeErr) {
+    console.warn(`  ⚠ Nearest store lookup failed (${supermarket}):`, storeErr.message);
+  }
+
   const isColes = supermarket === 'Coles';
   const host = isColes ? COLES_HOST : WOOLWORTHS_HOST;
   const path = isColes ? '/coles/search' : '/woolworths/search';
   const url = `https://${host}${path}`;
+  const searchParams = buildStoreSearchParams(supermarket, query, location, storeIds);
   let lastError = null;
 
   for (let attempt = 1; attempt <= API_MAX_RETRIES; attempt++) {
     try {
       const response = await axios.get(url, {
-        params: { query, page: 1 },
+        params: searchParams,
         headers: {
           'x-rapidapi-key': RAPIDAPI_KEY,
           'x-rapidapi-host': host,
@@ -2898,7 +3244,7 @@ async function fetchStoreRawList(supermarket, keyword) {
 
       try {
         await connectMongo();
-        await writeApiCache(supermarket, query, rawList);
+        await writeApiCache(supermarket, query, rawList, location);
       } catch (cacheErr) {
         console.warn(`  ⚠ MongoDB cache write failed (${supermarket}):`, cacheErr.message);
       }
@@ -2967,7 +3313,10 @@ app.get('/api/compare', async (req, res) => {
     return res.status(400).json({ error: 'Missing keyword parameter.' });
   }
 
-  console.log(`\n🔎 Searching: "${keyword}"`);
+  const location = getRequestLocation();
+  console.log(
+    `\n🔎 Searching: "${keyword}" @ ${location.latitude}, ${location.longitude} (${location.source})`
+  );
 
   // Bọc try/catch riêng cho Coles: lỗi vẫn trả Woolworths bình thường
   if (!RAPIDAPI_KEY) {
@@ -3086,7 +3435,10 @@ app.get('/api/compare/barcode', async (req, res) => {
     });
   }
 
-  console.log(`\n📷 Barcode lookup: ${barcode}`);
+  const location = getRequestLocation();
+  console.log(
+    `\n📷 Barcode lookup: ${barcode} @ ${location.latitude}, ${location.longitude} (${location.source})`
+  );
 
   const safeFetchRaw = async (supermarket) => {
     try {
@@ -3167,7 +3519,10 @@ app.post('/api/analyze-prompt', async (req, res) => {
     return res.status(400).json({ error: 'Missing prompt. Send { "prompt": "..." }.' });
   }
 
-  console.log(`\n🤖 AI shopping list (${prompt.length} chars)`);
+  const location = getRequestLocation();
+  console.log(
+    `\n🤖 AI shopping list (${prompt.length} chars) @ ${location.latitude}, ${location.longitude} (${location.source})`
+  );
 
   let parsedItems;
   let parseSource = 'openai';
@@ -3239,29 +3594,45 @@ function findWatchlistProduct(products, watchEntry) {
   return product;
 }
 
-/** Làm mới giá cho 1 mục watchlist */
+/** Refresh one watchlist row: dual-store prices + record history for Chart.js. */
 async function refreshSingleWatchItem(entry) {
   const supermarket = entry.supermarket;
   const keyword = String(entry.searchKeyword || deriveSearchKeyword(entry.name)).trim();
 
   try {
-    const products =
-      supermarket === 'Coles'
-        ? await fetchColes(keyword)
-        : await fetchWoolworths(keyword);
+    const [colesSettled, woolSettled] = await Promise.allSettled([
+      fetchColes(keyword),
+      fetchWoolworths(keyword),
+    ]);
 
-    const matched = findWatchlistProduct(products, entry);
+    const colesProducts =
+      colesSettled.status === 'fulfilled' ? colesSettled.value : [];
+    const woolProducts =
+      woolSettled.status === 'fulfilled' ? woolSettled.value : [];
 
-    if (!matched) {
+    const colesMatch = findWatchlistProduct(colesProducts, entry);
+    const woolMatch = findWatchlistProduct(woolProducts, entry);
+    const primary = supermarket === 'Coles' ? colesMatch : woolMatch;
+
+    if (colesMatch?.price != null) {
+      await recordPriceHistoryPoint(entry.id, 'Coles', colesMatch.price, entry.name);
+    }
+    if (woolMatch?.price != null) {
+      await recordPriceHistoryPoint(entry.id, 'Woolworths', woolMatch.price, entry.name);
+    }
+
+    if (!primary) {
       return {
         id: entry.id,
         found: false,
+        colesPrice: colesMatch?.price ?? null,
+        woolworthsPrice: woolMatch?.price ?? null,
         error: 'Product not found in latest search results.',
       };
     }
 
     const watchedPrice = Number(entry.watchedAtPrice);
-    const currentPrice = matched.price;
+    const currentPrice = primary.price;
     const priceDrop =
       Number.isFinite(watchedPrice) && currentPrice < watchedPrice
         ? Number((watchedPrice - currentPrice).toFixed(2))
@@ -3271,10 +3642,12 @@ async function refreshSingleWatchItem(entry) {
       id: entry.id,
       found: true,
       currentPrice,
+      colesPrice: colesMatch?.price ?? null,
+      woolworthsPrice: woolMatch?.price ?? null,
       watchedAtPrice: watchedPrice,
       priceDrop,
       isPriceDown: priceDrop > 0,
-      product: matched,
+      product: primary,
     };
   } catch (error) {
     return {
@@ -3300,7 +3673,10 @@ app.post('/api/watchlist/refresh', async (req, res) => {
     return res.status(400).json({ error: 'Maximum 30 watchlist items per request.' });
   }
 
-  console.log(`\n🔔 Refresh watchlist: ${items.length} items`);
+  const location = getRequestLocation();
+  console.log(
+    `\n🔔 Refresh watchlist: ${items.length} items @ ${location.latitude}, ${location.longitude} (${location.source})`
+  );
 
   const results = await Promise.all(
     items.map((entry) =>
@@ -3318,6 +3694,30 @@ app.post('/api/watchlist/refresh', async (req, res) => {
   console.log(`  ✅ Refreshed ${results.filter((r) => r.found).length}/${items.length}\n`);
 
   res.json({ results });
+});
+
+// ============================================================
+// 7d. WATCHLIST: GET /api/watchlist/price-history?watchId=...
+// ============================================================
+
+/**
+ * Price history for Chart.js accordion (Coles + Woolworths series per watchlist id).
+ */
+app.get('/api/watchlist/price-history', async (req, res) => {
+  const watchId = String(req.query.watchId || '').trim();
+  if (!watchId) {
+    return res.status(400).json({ error: 'Missing watchId query parameter.' });
+  }
+
+  try {
+    const series = await getPriceHistoryForWatch(watchId);
+    return res.json({ watchId, series });
+  } catch (error) {
+    console.error('  ❌ Price history error:', error.message);
+    return res.status(500).json({
+      error: error.message || 'Could not load price history.',
+    });
+  }
 });
 
 // Health check endpoint
