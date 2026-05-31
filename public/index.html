@@ -197,5 +197,12 @@
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script src="script.js?v=31"></script>
     <script src="barcode-scanner.js?v=3"></script>
+
+    <!--
+      Vercel Web Analytics + Speed Insights (chỉ hoạt động khi deploy trên Vercel).
+      Đặt cuối body, defer: tải song song, chạy sau khi DOM sẵn sàng — không chặn UI / thanh % AI Analyzer.
+    -->
+    <script defer src="/_vercel/insights/script.js"></script>
+    <script defer src="/_vercel/speed-insights/script.js"></script>
 </body>
 </html>
