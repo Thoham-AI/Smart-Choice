@@ -1051,10 +1051,12 @@ function renderAiShoppingResults(data) {
     <div class="ai-total-card${colesHighlight ? ' highlight' : ''}">
       <h3>All at Coles${colesHighlight ? ' (best)' : ''}</h3>
       <p class="amount">$${(opt.colesOnlyTotal || 0).toFixed(2)}</p>
+      ${opt.colesOnlyIncomplete ? '<p class="cart-incomplete-note">Includes estimated prices for missing items (see item details).</p>' : ''}
     </div>
     <div class="ai-total-card${woolHighlight ? ' highlight' : ''}">
       <h3>All at Woolworths${woolHighlight ? ' (best)' : ''}</h3>
       <p class="amount">$${(opt.woolworthsOnlyTotal || 0).toFixed(2)}</p>
+      ${opt.woolworthsOnlyIncomplete ? '<p class="cart-incomplete-note">Includes estimated prices for missing items (see item details).</p>' : ''}
     </div>
     <div class="ai-total-card${splitHighlight ? ' highlight' : ''}">
       <h3>Split cart${splitHighlight ? ' (best)' : ''}</h3>
@@ -1096,13 +1098,23 @@ function formatRecommendationMessage(message) {
 }
 
 function lineItemsToStoreEntries(lineItems, store) {
-  return lineItems
-    .filter((line) => (store === 'Coles' ? line.coles : line.woolworths))
-    .map((line) => ({
+  const isColes = store === 'Coles';
+  return lineItems.map((line) => {
+    const product = isColes ? line.coles : line.woolworths;
+    const lineTotal = isColes
+      ? (line.colesSingleStorePrice ?? line.colesLinePrice ?? 0)
+      : (line.woolworthsSingleStorePrice ?? line.woolworthsLinePrice ?? 0);
+    const incomplete = isColes ? line.colesIncomplete : line.woolIncomplete;
+    const incompleteNote = isColes ? line.colesIncompleteNote : line.woolIncompleteNote;
+    return {
       request: line.request,
-      product: store === 'Coles' ? line.coles : line.woolworths,
-      lineTotal: store === 'Coles' ? line.colesLinePrice : line.woolworthsLinePrice,
-    }));
+      product,
+      lineTotal,
+      incomplete,
+      incompleteNote,
+      noMatch: !product,
+    };
+  });
 }
 
 function renderAiSplitCart(splitCart, bestStrategy = 'split', lineItems = []) {
@@ -1163,8 +1175,9 @@ function renderSplitItems(items, storeLabel) {
       (entry) => `
     <div class="ai-split-item">
       <p class="request-label">${escapeHtml(formatRequestLabel(entry.request))}</p>
-      <p class="product-title">${escapeHtml(entry.product?.name || '—')}</p>
+      <p class="product-title">${escapeHtml(entry.product?.name || (entry.noMatch ? 'No match' : '—'))}</p>
       ${entry.product?.pricingNote ? `<p class="pricing-note">${escapeHtml(entry.product.pricingNote)}</p>` : ''}
+      ${entry.incompleteNote ? `<p class="imputed-note">${escapeHtml(entry.incompleteNote)}</p>` : ''}
       <p>$${entry.lineTotal.toFixed(2)}</p>
     </div>
   `
@@ -1190,27 +1203,38 @@ function renderAiLineItems(lineItems) {
     const woolClass =
       line.chosenStore === 'Woolworths' ? 'pick' : line.woolworths ? '' : 'missing';
 
+    const colesUsable = line.coles && Number(line.colesLinePrice) > 0;
+    const woolUsable = line.woolworths && Number(line.woolworthsLinePrice) > 0;
+
     row.innerHTML = `
       <p class="line-header">${escapeHtml(formatRequestLabel(line.request))}</p>
       <div class="ai-line-stores">
         <div class="${colesClass}">
           <strong>Coles</strong>
           ${
-            line.coles
+            colesUsable
               ? `<p>${escapeHtml(line.coles.name)}</p>
                  ${line.coles.pricingNote ? `<p class="pricing-note">${escapeHtml(line.coles.pricingNote)}</p>` : ''}
                  <p class="ai-line-price">$${line.colesLinePrice.toFixed(2)}</p>`
-              : '<p class="missing">No match</p>'
+              : line.colesIncomplete
+                ? `<p class="missing">No match</p>
+                   <p class="ai-line-price imputed">$${(line.colesSingleStorePrice ?? 0).toFixed(2)}</p>
+                   <p class="imputed-note">${escapeHtml(line.colesIncompleteNote || '')}</p>`
+                : '<p class="missing">No match</p>'
           }
         </div>
         <div class="${woolClass}">
           <strong>Woolworths</strong>
           ${
-            line.woolworths
+            woolUsable
               ? `<p>${escapeHtml(line.woolworths.name)}</p>
                  ${line.woolworths.pricingNote ? `<p class="pricing-note">${escapeHtml(line.woolworths.pricingNote)}</p>` : ''}
                  <p class="ai-line-price">$${line.woolworthsLinePrice.toFixed(2)}</p>`
-              : '<p class="missing">No match</p>'
+              : line.woolIncomplete
+                ? `<p class="missing">No match</p>
+                   <p class="ai-line-price imputed">$${(line.woolworthsSingleStorePrice ?? 0).toFixed(2)}</p>
+                   <p class="imputed-note">${escapeHtml(line.woolIncompleteNote || '')}</p>`
+                : '<p class="missing">No match</p>'
           }
         </div>
       </div>

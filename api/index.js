@@ -1927,11 +1927,301 @@ function buildSearchQueryFromListItem(listItem) {
 }
 
 /**
- * Tính tiền 1 dòng giỏ (dùng chung công thức với applyListItemPricing).
+ * Compute line price (shared with applyListItemPricing).
  */
 function computeLinePrice(product, listItem) {
   if (!product) return 0;
   return applyListItemPricing(product, listItem).price;
+}
+
+// ============================================================
+// 3b2. PACKAGE FALLBACK & SINGLE-STORE PRICE IMPUTATION
+// ============================================================
+
+/** Pack weight in kg from normalized product fields or product name. */
+function getProductPackWeightKg(product) {
+  if (!product) return null;
+  if (product.packWeightKg != null && product.packWeightKg > 0) {
+    return product.packWeightKg;
+  }
+  const fromFields = getPackWeightKgFromProduct(product.name, product);
+  if (fromFields != null && fromFields > 0) return fromFields;
+  const sizeInfo = extractSizeInfo(product.name);
+  if (sizeInfo.grams != null && sizeInfo.grams > 0) {
+    return Number((sizeInfo.grams / 1000).toFixed(4));
+  }
+  return null;
+}
+
+/** Target volume in litres (for pack scaling of liquids). */
+function getTargetVolumeL(listItem) {
+  if (!listItem) return null;
+  const unit = String(listItem.unit || '').toLowerCase();
+  const qty = Number(listItem.quantity) > 0 ? Number(listItem.quantity) : 1;
+  if (unit === 'l') return qty;
+  if (unit === 'ml') return qty / 1000;
+  return null;
+}
+
+/** Pack volume in litres from product name / size fields. */
+function getProductPackVolumeL(product) {
+  if (!product) return null;
+  const sizeInfo = extractSizeInfo(product.name);
+  if (sizeInfo.grams == null) return null;
+  const fromName = String(product.name || '').toLowerCase();
+  if (/\bml\b/.test(fromName) || /\b\d+(?:\.\d+)?\s*l\b/.test(fromName)) {
+    return sizeInfo.grams / 1000;
+  }
+  return null;
+}
+
+/**
+ * Search queries with smaller pack sizes when the requested weight is large
+ * (e.g. "rice 10kg" → try "rice 5kg", "rice 1kg", then "rice").
+ */
+function buildSmallerPackSearchQueries(listItem) {
+  const keyword = String(listItem.keyword || '').trim();
+  if (!keyword) return [];
+
+  const queries = [];
+  const targetKg = getTargetWeightKg(listItem);
+  const targetL = getTargetVolumeL(listItem);
+
+  if (targetKg != null && targetKg > 0) {
+    for (const size of [5, 2, 1, 0.5]) {
+      if (size < targetKg) {
+        queries.push(`${keyword} ${size}kg`);
+      }
+    }
+    queries.push(keyword);
+    return [...new Set(queries)];
+  }
+
+  if (targetL != null && targetL > 0) {
+    for (const size of [2, 1, 0.5]) {
+      if (size < targetL) {
+        queries.push(`${keyword} ${size}l`);
+      }
+    }
+    queries.push(keyword);
+    return [...new Set(queries)];
+  }
+
+  return [];
+}
+
+/**
+ * Pick a smaller pack (or per-kg price) and scale up to the requested amount.
+ * Used when no exact match exists for "rice 10kg" etc.
+ */
+function pickPackageFallbackFromProducts(products, listItem) {
+  const targetKg = getTargetWeightKg(listItem);
+  const targetL = getTargetVolumeL(listItem);
+  if ((targetKg == null || targetKg <= 0) && (targetL == null || targetL <= 0)) {
+    return null;
+  }
+
+  const keyword = listItem.keyword;
+  const candidates = filterProductsForSearchIntent(products, keyword, listItem);
+  if (!candidates.length) return null;
+
+  let best = null;
+
+  for (const product of candidates) {
+    const shelf = product.packShelfPrice ?? product.price;
+    if (shelf == null || shelf <= 0) continue;
+
+    const score = scoreProductForKeyword(
+      product.name,
+      keyword,
+      '',
+      listItem,
+      product
+    );
+    if (score < 0.18) continue;
+
+    let estimatedTotal = null;
+    let pricingNote = null;
+    let packsNeeded = null;
+
+    if (targetKg != null && targetKg > 0) {
+      const packKg = getProductPackWeightKg(product);
+      if (packKg != null && packKg > 0) {
+        packsNeeded = Math.ceil(targetKg / packKg);
+        estimatedTotal = shelf * packsNeeded;
+        pricingNote = `${packsNeeded} × ${packKg}kg pack @ $${shelf.toFixed(2)} (est. ${targetKg}kg)`;
+      } else if (product.pricePerKg != null && product.pricePerKg > 0) {
+        estimatedTotal = product.pricePerKg * targetKg;
+        pricingNote = `$${product.pricePerKg.toFixed(2)}/kg × ${targetKg}kg`;
+      }
+    } else if (targetL != null && targetL > 0) {
+      const packL = getProductPackVolumeL(product);
+      if (packL != null && packL > 0) {
+        packsNeeded = Math.ceil(targetL / packL);
+        estimatedTotal = shelf * packsNeeded;
+        pricingNote = `${packsNeeded} × ${packL}L pack @ $${shelf.toFixed(2)} (est. ${targetL}L)`;
+      }
+    }
+
+    if (estimatedTotal == null || estimatedTotal <= 0) continue;
+
+    if (!best || estimatedTotal < best.estimatedTotal) {
+      best = {
+        product,
+        estimatedTotal: Number(estimatedTotal.toFixed(2)),
+        pricingNote,
+        packsNeeded,
+        score,
+      };
+    }
+  }
+
+  return best;
+}
+
+/** Apply scaled pack pricing onto a matched product for the cart line. */
+function buildPackageFallbackPricedProduct(fallback, listItem) {
+  const base = applyListItemPricing(fallback.product, listItem);
+  return {
+    ...base,
+    price: fallback.estimatedTotal,
+    isPackageFallback: true,
+    isAdjustedPrice: true,
+    pricingNote: `(Package estimate: ${fallback.pricingNote})`,
+  };
+}
+
+/** Fetch extra search results using smaller pack queries. */
+async function fetchSmallerPackProductItems(supermarket, listItem) {
+  const queries = buildSmallerPackSearchQueries(listItem);
+  if (!queries.length) return [];
+
+  const weightListItem = listItem;
+  let merged = [];
+
+  for (const query of queries) {
+    try {
+      const rawList = await fetchStoreRawList(supermarket, query);
+      const batch = normalizeRawList(rawList, supermarket).map((product) =>
+        applyWeightContextToProduct(product, weightListItem)
+      );
+      merged = mergeProductLists(merged, batch, RESULT_LIMIT * 2);
+    } catch (err) {
+      console.warn(`  ⚠ ${supermarket} smaller-pack search failed for "${query}":`, err.message);
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Resolve the best product for one store: direct match → pack fallback → smaller-pack search.
+ */
+async function resolveStoreLineMatch(supermarket, searchQuery, listItem) {
+  let storeError = null;
+  let allItems = [];
+
+  try {
+    const result = await fetchStoreProducts(supermarket, searchQuery, listItem);
+    allItems = result.items;
+    storeError = result.error;
+  } catch (error) {
+    storeError = formatStoreError(supermarket, error);
+    return { product: null, score: 0, error: storeError, packageFallback: false };
+  }
+
+  let picked = pickBestProductMatch(allItems, listItem.keyword, listItem);
+  if (picked.product) {
+    return {
+      product: applyListItemPricing(picked.product, listItem),
+      score: picked.score,
+      error: storeError,
+      packageFallback: false,
+    };
+  }
+
+  let pkg = pickPackageFallbackFromProducts(allItems, listItem);
+  if (pkg) {
+    console.log(`  📦 ${supermarket} package fallback: ${pkg.pricingNote}`);
+    return {
+      product: buildPackageFallbackPricedProduct(pkg, listItem),
+      score: pkg.score,
+      error: storeError,
+      packageFallback: true,
+    };
+  }
+
+  const extraItems = await fetchSmallerPackProductItems(supermarket, listItem);
+  if (extraItems.length) {
+    allItems = mergeProductLists(allItems, extraItems, RESULT_LIMIT * 2);
+    pkg = pickPackageFallbackFromProducts(allItems, listItem);
+    if (pkg) {
+      console.log(`  📦 ${supermarket} package fallback (extra search): ${pkg.pricingNote}`);
+      return {
+        product: buildPackageFallbackPricedProduct(pkg, listItem),
+        score: pkg.score,
+        error: storeError,
+        packageFallback: true,
+      };
+    }
+  }
+
+  return { product: null, score: picked.score, error: storeError, packageFallback: false };
+}
+
+/**
+ * When a store has no match, impute that store's single-cart price from the rival store
+ * so "All at Coles" / "All at Woolworths" totals are not artificially cheap.
+ */
+function storeLineHasUsablePrice(line, store) {
+  if (store === 'coles') {
+    return Boolean(line.coles) && Number(line.colesLinePrice) > 0;
+  }
+  return Boolean(line.woolworths) && Number(line.woolworthsLinePrice) > 0;
+}
+
+function enrichLineWithSingleStorePricing(line) {
+  const colesUsable = storeLineHasUsablePrice(line, 'coles');
+  const woolUsable = storeLineHasUsablePrice(line, 'woolworths');
+  const colesActual = colesUsable ? Number(line.colesLinePrice) : 0;
+  const woolActual = woolUsable ? Number(line.woolworthsLinePrice) : 0;
+
+  let colesSingleStorePrice = colesActual;
+  let woolSingleStorePrice = woolActual;
+  let colesIncomplete = false;
+  let woolIncomplete = false;
+  let colesIncompleteNote = null;
+  let woolIncompleteNote = null;
+
+  const itemLabel = formatRequestKeywordLabel(line.request);
+
+  if (!colesUsable && woolUsable) {
+    colesSingleStorePrice = woolActual;
+    colesIncomplete = true;
+    colesIncompleteNote = `This store is missing ${itemLabel}; price estimated from Woolworths for comparison.`;
+  }
+
+  if (!woolUsable && colesUsable) {
+    woolSingleStorePrice = colesActual;
+    woolIncomplete = true;
+    woolIncompleteNote = `This store is missing ${itemLabel}; price estimated from Coles for comparison.`;
+  }
+
+  return {
+    ...line,
+    colesSingleStorePrice: Number(colesSingleStorePrice.toFixed(2)),
+    woolworthsSingleStorePrice: Number(woolSingleStorePrice.toFixed(2)),
+    colesIncomplete,
+    woolIncomplete,
+    colesIncompleteNote,
+    woolIncompleteNote,
+    is_incomplete: colesIncomplete || woolIncomplete,
+  };
+}
+
+function formatRequestKeywordLabel(request) {
+  if (!request) return 'item';
+  return String(request.keyword || '').trim() || 'item';
 }
 
 // ============================================================
@@ -2006,55 +2296,36 @@ function parseShoppingListFallback(promptText) {
   });
 }
 
-/** Tìm sản phẩm tốt nhất ở cả 2 siêu thị cho 1 dòng giỏ */
+/** Resolve best product match for one line at both stores. */
 async function resolveListItem(listItem) {
   const searchQuery = buildSearchQueryFromListItem(listItem);
 
   const [colesSettled, woolSettled] = await Promise.allSettled([
-    (async () => {
-      try {
-        const result = await fetchStoreProducts('Coles', searchQuery, listItem);
-        return { items: result.items, error: null, usedFallback: result.usedFallback };
-      } catch (error) {
-        return { items: [], error: formatStoreError('Coles', error) };
-      }
-    })(),
-    (async () => {
-      try {
-        const result = await fetchStoreProducts('Woolworths', searchQuery, listItem);
-        return { items: result.items, error: null, usedFallback: result.usedFallback };
-      } catch (error) {
-        return { items: [], error: formatStoreError('Woolworths', error) };
-      }
-    })(),
+    resolveStoreLineMatch('Coles', searchQuery, listItem),
+    resolveStoreLineMatch('Woolworths', searchQuery, listItem),
   ]);
 
-  const colesPayload =
+  const colesResult =
     colesSettled.status === 'fulfilled'
       ? colesSettled.value
-      : { items: [], error: formatStoreError('Coles', colesSettled.reason) };
-  const woolPayload =
+      : {
+          product: null,
+          score: 0,
+          error: formatStoreError('Coles', colesSettled.reason),
+          packageFallback: false,
+        };
+  const woolResult =
     woolSettled.status === 'fulfilled'
       ? woolSettled.value
-      : { items: [], error: formatStoreError('Woolworths', woolSettled.reason) };
+      : {
+          product: null,
+          score: 0,
+          error: formatStoreError('Woolworths', woolSettled.reason),
+          packageFallback: false,
+        };
 
-  const colesMatch = pickBestProductMatch(
-    colesPayload.items,
-    listItem.keyword,
-    listItem
-  );
-  const woolMatch = pickBestProductMatch(
-    woolPayload.items,
-    listItem.keyword,
-    listItem
-  );
-
-  const colesPriced = colesMatch.product
-    ? applyListItemPricing(colesMatch.product, listItem)
-    : null;
-  const woolPriced = woolMatch.product
-    ? applyListItemPricing(woolMatch.product, listItem)
-    : null;
+  const colesPriced = colesResult.product;
+  const woolPriced = woolResult.product;
 
   const colesPrice = colesPriced?.price ?? 0;
   const woolPrice = woolPriced?.price ?? 0;
@@ -2083,27 +2354,32 @@ async function resolveListItem(listItem) {
     lineTotal = woolPrice;
   }
 
-  return {
+  const baseLine = {
     request: listItem,
     searchQuery,
     coles: colesPriced,
     woolworths: woolPriced,
     colesLinePrice: colesPrice,
     woolworthsLinePrice: woolPrice,
-    colesMatchScore: colesMatch.score,
-    woolworthsMatchScore: woolMatch.score,
+    colesMatchScore: colesResult.score,
+    woolworthsMatchScore: woolResult.score,
+    colesPackageFallback: Boolean(colesResult.packageFallback),
+    woolworthsPackageFallback: Boolean(woolResult.packageFallback),
     storeErrors: {
-      coles: colesPayload.error,
-      woolworths: woolPayload.error,
+      coles: colesResult.error,
+      woolworths: woolResult.error,
     },
     chosenStore,
     chosenProduct,
     lineTotal,
   };
+
+  return enrichLineWithSingleStorePricing(baseLine);
 }
 
 /**
- * Tổng hợp 3 phương án: chỉ Coles, chỉ Woolworths, split rẻ nhất.
+ * Aggregate split / single-store cart totals.
+ * Single-store totals use imputed rival prices when a store has no match (never $0).
  */
 function buildCartOptimization(lineItems) {
   let colesOnlyTotal = 0;
@@ -2111,17 +2387,27 @@ function buildCartOptimization(lineItems) {
   let splitTotal = 0;
   const splitCart = { coles: [], woolworths: [] };
   const unresolved = [];
+  const incompleteWarnings = [];
 
   for (const line of lineItems) {
-    const hasColes = Boolean(line.coles);
-    const hasWool = Boolean(line.woolworths);
+    const colesUsable = storeLineHasUsablePrice(line, 'coles');
+    const woolUsable = storeLineHasUsablePrice(line, 'woolworths');
 
-    if (hasColes) colesOnlyTotal += line.colesLinePrice;
-    else if (line.request?.keyword) unresolved.push(line.request.keyword);
+    colesOnlyTotal += line.colesSingleStorePrice ?? line.colesLinePrice ?? 0;
+    woolworthsOnlyTotal += line.woolworthsSingleStorePrice ?? line.woolworthsLinePrice ?? 0;
 
-    if (hasWool) woolworthsOnlyTotal += line.woolworthsLinePrice;
+    if (!colesUsable && !woolUsable && line.request?.keyword) {
+      unresolved.push(line.request.keyword);
+    }
 
-    if (!hasColes && !hasWool) continue;
+    if (line.colesIncomplete && line.colesIncompleteNote) {
+      incompleteWarnings.push({ store: 'Coles', message: line.colesIncompleteNote });
+    }
+    if (line.woolIncomplete && line.woolIncompleteNote) {
+      incompleteWarnings.push({ store: 'Woolworths', message: line.woolIncompleteNote });
+    }
+
+    if (!colesUsable && !woolUsable) continue;
 
     splitTotal += line.lineTotal;
 
@@ -2133,6 +2419,11 @@ function buildCartOptimization(lineItems) {
       woolworths: line.woolworths,
       colesLinePrice: line.colesLinePrice,
       woolworthsLinePrice: line.woolworthsLinePrice,
+      colesSingleStorePrice: line.colesSingleStorePrice,
+      woolworthsSingleStorePrice: line.woolworthsSingleStorePrice,
+      colesIncomplete: line.colesIncomplete,
+      woolIncomplete: line.woolIncomplete,
+      is_incomplete: line.is_incomplete,
     };
 
     if (line.chosenStore === 'Coles') {
@@ -2167,6 +2458,10 @@ function buildCartOptimization(lineItems) {
     recommendedStore: bestPick.store,
     bestTotal: bestPick.total,
     isSplitWorthIt: bestPick.strategy === 'split',
+    is_incomplete: incompleteWarnings.length > 0,
+    colesOnlyIncomplete: incompleteWarnings.some((w) => w.store === 'Coles'),
+    woolworthsOnlyIncomplete: incompleteWarnings.some((w) => w.store === 'Woolworths'),
+    incompleteWarnings,
     recommendation,
     savings: recommendation,
     savingsVsColes: recommendation.savingsVsColes,
