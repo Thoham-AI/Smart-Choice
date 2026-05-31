@@ -22,13 +22,57 @@ function roundMoney(amount) {
   return Number(n.toFixed(2));
 }
 
+const UNIT_PRICE_EPS = 0.009;
+
 /**
- * Tính chênh lệch giá giữa hai siêu thị cho một món (item-level saving).
+ * Compare two products using $/kg when available (same logic as API similar-pairs).
  * @returns {{ saving: number, cheaperStore: 'Coles'|'Woolworths'|'tie'|null }}
  */
-function calcDualStoreSaving(colesPrice, woolPrice) {
-  const coles = Number(colesPrice);
-  const wool = Number(woolPrice);
+function extractUnitPricePerKg(product) {
+  if (!product) return null;
+  if (product.pricePerKg != null && Number(product.pricePerKg) > 0) {
+    return Number(product.pricePerKg);
+  }
+  const text = String(product.unit_price_text || '');
+  const kgMatch = text.match(/\$?\s*([\d.]+)\s*\/\s*kg\b/i);
+  if (kgMatch) {
+    const v = parseFloat(kgMatch[1]);
+    if (Number.isFinite(v) && v > 0) return Number(v.toFixed(4));
+  }
+  const per100g = text.match(/\$?\s*([\d.]+)\s*\/\s*100\s*g\b/i);
+  if (per100g) {
+    const v = parseFloat(per100g[1]);
+    if (Number.isFinite(v) && v > 0) return Number((v * 10).toFixed(4));
+  }
+  const shelf = product.packShelfPrice ?? product.price;
+  const kg = product.packWeightKg;
+  if (shelf != null && kg != null && kg > 0) {
+    return Number((shelf / kg).toFixed(4));
+  }
+  return null;
+}
+
+function compareProductsForCheaper(woolProduct, colesProduct) {
+  const woolKg = extractUnitPricePerKg(woolProduct);
+  const colesKg = extractUnitPricePerKg(colesProduct);
+
+  if (woolKg != null && colesKg != null) {
+    const diffKg = Math.abs(woolKg - colesKg);
+    if (diffKg < UNIT_PRICE_EPS) {
+      return { saving: 0, cheaperStore: 'tie' };
+    }
+    const cheaperStore = woolKg < colesKg ? 'Woolworths' : 'Coles';
+    const woolW = woolProduct?.packWeightKg > 0 ? woolProduct.packWeightKg : 1;
+    const colesW = colesProduct?.packWeightKg > 0 ? colesProduct.packWeightKg : 1;
+    const refKg = Math.min(woolW, colesW);
+    return {
+      saving: roundMoney(diffKg * refKg),
+      cheaperStore,
+    };
+  }
+
+  const coles = Number(colesProduct?.packShelfPrice ?? colesProduct?.price);
+  const wool = Number(woolProduct?.packShelfPrice ?? woolProduct?.price);
   if (!Number.isFinite(coles) || !Number.isFinite(wool) || coles <= 0 || wool <= 0) {
     return { saving: 0, cheaperStore: null };
   }
@@ -39,27 +83,102 @@ function calcDualStoreSaving(colesPrice, woolPrice) {
 }
 
 /**
- * Badge xanh lá cạnh giá rẻ hơn: "Save $2.50 by choosing Coles".
- * @param {'Coles'|'Woolworths'} storeForThisSide - Siêu thị của cột đang hiển thị
+ * Item-level saving badge; uses $/kg when both products provide it.
  */
-function buildItemSavingBadge(colesPrice, woolPrice, storeForThisSide) {
-  const { saving, cheaperStore } = calcDualStoreSaving(colesPrice, woolPrice);
+function calcDualStoreSaving(colesProduct, woolProduct) {
+  if (colesProduct && woolProduct) {
+    return compareProductsForCheaper(woolProduct, colesProduct);
+  }
+  const coles = Number(colesProduct);
+  const wool = Number(woolProduct);
+  if (!Number.isFinite(coles) || !Number.isFinite(wool) || coles <= 0 || wool <= 0) {
+    return { saving: 0, cheaperStore: null };
+  }
+  const saving = roundMoney(Math.abs(coles - wool));
+  if (saving <= 0) return { saving: 0, cheaperStore: 'tie' };
+  const cheaperStore = wool < coles ? 'Woolworths' : 'Coles';
+  return { saving, cheaperStore };
+}
+
+/**
+ * Green badge beside the cheaper side (hidden when unit prices are equal).
+ */
+function buildItemSavingBadge(colesProduct, woolProduct, storeForThisSide) {
+  const { saving, cheaperStore } = calcDualStoreSaving(colesProduct, woolProduct);
   if (!cheaperStore || cheaperStore === 'tie' || saving <= 0) return '';
   if (cheaperStore !== storeForThisSide) return '';
   return `<span class="item-saving-badge">Save $${saving.toFixed(2)} by choosing ${cheaperStore}</span>`;
 }
 
-/** Khối giá + badge tiết kiệm (dùng ở Similar products) */
-function buildPriceBlockWithSaving(item, colesPrice, woolPrice) {
-  const badge = buildItemSavingBadge(colesPrice, woolPrice, item.supermarket);
+/** Price block plus savings badge (Similar products). */
+function buildPriceBlockWithSaving(item, colesProduct, woolProduct) {
+  const badge = buildItemSavingBadge(colesProduct, woolProduct, item.supermarket);
   return `${buildPriceBlock(item)}${badge}`;
 }
 
+// --- Official store search URLs (image + product name links) ---
+
+const COLES_SEARCH_BASE = 'https://www.coles.com.au/search?q=';
+const WOOLWORTHS_SEARCH_BASE = 'https://www.woolworths.com.au/shop/search?searchTerm=';
+
 /**
- * Tiết kiệm của một dòng giỏ = chênh lệch Coles vs Woolworths (nếu có đủ hai giá).
+ * Search term for store websites: barcode first, then product name, then cart line keyword.
+ */
+function getStoreSearchQuery(product, fallbackKeyword = '') {
+  const barcode = String(product?.barcode || '').replace(/\D/g, '');
+  if (barcode.length >= 8) return barcode;
+  const name = String(product?.name || '').trim();
+  if (name) return name;
+  return String(fallbackKeyword || '').trim();
+}
+
+function buildColesSearchUrl(query) {
+  return `${COLES_SEARCH_BASE}${encodeURIComponent(query)}`;
+}
+
+function buildWoolworthsSearchUrl(query) {
+  return `${WOOLWORTHS_SEARCH_BASE}${encodeURIComponent(query)}`;
+}
+
+/** Resolve href for image/name links: official search URL, or product page as fallback. */
+function resolveStoreSearchUrl(item, fallbackKeyword = '') {
+  const store = item?.supermarket;
+  const query = getStoreSearchQuery(item, fallbackKeyword);
+  if (query && (store === 'Coles' || store === 'Woolworths')) {
+    return store === 'Coles' ? buildColesSearchUrl(query) : buildWoolworthsSearchUrl(query);
+  }
+  const direct = String(item?.url || '').trim();
+  return /^https?:\/\//i.test(direct) ? direct : '';
+}
+
+/**
+ * Per-line cart saving = Coles vs Woolworths price gap when both prices exist.
  */
 function calcLineSavingForCartEntry(entry) {
-  return calcDualStoreSaving(entry.colesPrice, entry.woolworthsPrice).saving;
+  const woolProduct =
+    entry.woolworthsPrice != null
+      ? {
+          price: entry.woolworthsPrice,
+          packShelfPrice: entry.woolworthsPrice,
+          packWeightKg: entry.woolworthsPackKg,
+          pricePerKg: entry.woolworthsPricePerKg,
+          unit_price_text: entry.woolworthsUnitText,
+        }
+      : null;
+  const colesProduct =
+    entry.colesPrice != null
+      ? {
+          price: entry.colesPrice,
+          packShelfPrice: entry.colesPrice,
+          packWeightKg: entry.colesPackKg,
+          pricePerKg: entry.colesPricePerKg,
+          unit_price_text: entry.colesUnitText,
+        }
+      : null;
+  if (woolProduct && colesProduct) {
+    return compareProductsForCheaper(woolProduct, colesProduct).saving;
+  }
+  return 0;
 }
 
 /**
@@ -462,6 +581,12 @@ function addToCart(item) {
       (item.supermarket === 'Woolworths' ? item.price : null),
     colesPrice:
       pair?.coles?.price ?? (item.supermarket === 'Coles' ? item.price : null),
+    woolworthsPackKg: pair?.woolworths?.packWeightKg ?? (item.supermarket === 'Woolworths' ? item.packWeightKg : null),
+    colesPackKg: pair?.coles?.packWeightKg ?? (item.supermarket === 'Coles' ? item.packWeightKg : null),
+    woolworthsPricePerKg: pair?.woolworths?.pricePerKg ?? (item.supermarket === 'Woolworths' ? item.pricePerKg : null),
+    colesPricePerKg: pair?.coles?.pricePerKg ?? (item.supermarket === 'Coles' ? item.pricePerKg : null),
+    woolworthsUnitText: pair?.woolworths?.unit_price_text ?? (item.supermarket === 'Woolworths' ? item.unit_price_text : null),
+    colesUnitText: pair?.coles?.unit_price_text ?? (item.supermarket === 'Coles' ? item.unit_price_text : null),
     woolworthsUrl: pair?.woolworths?.url || (item.supermarket === 'Woolworths' ? item.url : ''),
     colesUrl: pair?.coles?.url || (item.supermarket === 'Coles' ? item.url : ''),
     lineSaving: 0,
@@ -778,8 +903,18 @@ function renderSummary(el, section, woolworths, coles, data = {}) {
 }
 
 /**
- * Cặp sản phẩm khớp nhau (Similar products) — so sánh chính xác hơn hai cột raw search.
- * Mỗi bên có nút Add to list để cộng dồn tiết kiệm trong giỏ.
+ * Similar product pair footer text (respects per-kg tie from API).
+ */
+function formatPairSaveText(pair) {
+  if (!pair) return '';
+  if (pair.cheaper === 'tie' || pair.saving <= 0) {
+    return pair.compareBasis === 'per_kg' ? 'Same price per kg' : 'Same price';
+  }
+  return `Difference: $${Number(pair.saving).toFixed(2)}`;
+}
+
+/**
+ * Matched pairs (Similar products) — image/name link to store search; Add to list only.
  */
 function renderMatchedPairs(container, section, pairs) {
   if (!pairs.length) {
@@ -798,14 +933,14 @@ function renderMatchedPairs(container, section, pairs) {
         ? '<span class="badge woolies-win">Woolworths cheaper</span>'
         : pair.cheaper === 'Coles'
           ? '<span class="badge coles-win">Coles cheaper</span>'
-          : '<span class="badge tie">Same price</span>';
+          : `<span class="badge tie">${pair.compareBasis === 'per_kg' ? 'Same price per kg' : 'Same price'}</span>`;
 
     row.innerHTML = `
       <div class="match-side" data-store="woolworths">
         <p class="store-label woolies">Woolworths</p>
         ${buildLinkedImage(pair.woolworths)}
         ${buildProductTitleRow(pair.woolworths)}
-        ${buildPriceBlockWithSaving(pair.woolworths, pair.coles.price, pair.woolworths.price)}
+        ${buildPriceBlockWithSaving(pair.woolworths, pair.coles, pair.woolworths)}
         <button type="button" class="select-btn match-add-btn">Add to list</button>
       </div>
       <div class="match-vs">vs</div>
@@ -813,10 +948,10 @@ function renderMatchedPairs(container, section, pairs) {
         <p class="store-label coles">Coles</p>
         ${buildLinkedImage(pair.coles)}
         ${buildProductTitleRow(pair.coles)}
-        ${buildPriceBlockWithSaving(pair.coles, pair.coles.price, pair.woolworths.price)}
+        ${buildPriceBlockWithSaving(pair.coles, pair.coles, pair.woolworths)}
         <button type="button" class="select-btn match-add-btn">Add to list</button>
       </div>
-      <div class="match-meta">${badge}<p class="save-text">Difference: $${pair.saving.toFixed(2)}</p></div>
+      <div class="match-meta">${badge}<p class="save-text">${formatPairSaveText(pair)}</p></div>
     `;
 
     const addButtons = row.querySelectorAll('.match-add-btn');
@@ -859,11 +994,7 @@ function renderStoreResults(container, products, storeName, storeError = '') {
 
     const pair = findPairForItem(item);
     const priceBlock = pair
-      ? buildPriceBlockWithSaving(
-          item,
-          pair.coles?.price,
-          pair.woolworths?.price
-        )
+      ? buildPriceBlockWithSaving(item, pair.coles, pair.woolworths)
       : buildPriceBlock(item);
 
     card.innerHTML = `
@@ -888,7 +1019,7 @@ function renderStoreResults(container, products, storeName, storeError = '') {
   syncWatchlistBellButtons();
 }
 
-/** Link to store product page (new tab) */
+/** Wrap inner HTML in an external link (new tab). */
 function buildProductLink(url, innerHtml) {
   const safeUrl = String(url || '').trim();
   if (!safeUrl || !/^https?:\/\//i.test(safeUrl)) {
@@ -897,17 +1028,22 @@ function buildProductLink(url, innerHtml) {
   return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="product-link">${innerHtml}</a>`;
 }
 
-function buildProductNameLink(item) {
-  return buildProductLink(item.url, escapeHtml(item.name));
+/** Product name linked to the store's official search (or product URL fallback). */
+function buildProductLinkForItem(item, innerHtml, fallbackKeyword = '') {
+  return buildProductLink(resolveStoreSearchUrl(item, fallbackKeyword), innerHtml);
 }
 
-function buildLinkedImage(item, className = 'match-thumb') {
+function buildProductNameLink(item, fallbackKeyword = '') {
+  return buildProductLinkForItem(item, escapeHtml(item.name), fallbackKeyword);
+}
+
+function buildLinkedImage(item, className = 'match-thumb', fallbackKeyword = '') {
   const img = buildSafeImageTag(item.image, `${item.supermarket} product`, className);
-  return buildProductLink(item.url, img);
+  return buildProductLinkForItem(item, img, fallbackKeyword);
 }
 
-/** Image + linked product name for AI analyzer rows (same pattern as Compare Prices). */
-function buildAiProductPreview(product, storeName) {
+/** Image + linked product name (Compare Prices and AI analyzer). */
+function buildAiProductPreview(product, storeName, fallbackKeyword = '') {
   if (!product?.name) return '';
   const item = {
     ...product,
@@ -915,8 +1051,8 @@ function buildAiProductPreview(product, storeName) {
   };
   return `
     <div class="ai-product-preview">
-      ${buildLinkedImage(item, 'ai-product-thumb')}
-      <p class="ai-product-name">${buildProductNameLink(item)}</p>
+      ${buildLinkedImage(item, 'ai-product-thumb', fallbackKeyword)}
+      <p class="ai-product-name">${buildProductNameLink(item, fallbackKeyword)}</p>
     </div>
   `;
 }
@@ -1426,21 +1562,22 @@ function renderSplitItems(items, storeLabel) {
   }
 
   return items
-    .map(
-      (entry) => `
+    .map((entry) => {
+      const fallbackKw = entry.request?.keyword || '';
+      return `
     <div class="ai-split-item">
       <p class="request-label">${escapeHtml(formatRequestLabel(entry.request))}</p>
       ${
         entry.product?.name
-          ? buildAiProductPreview(entry.product, storeLabel)
+          ? buildAiProductPreview(entry.product, storeLabel, fallbackKw)
           : `<p class="product-title">${escapeHtml(entry.noMatch ? 'No match' : '—')}</p>`
       }
       ${entry.product?.pricingNote ? `<p class="pricing-note">${escapeHtml(entry.product.pricingNote)}</p>` : ''}
       ${entry.incompleteNote ? `<p class="imputed-note">${escapeHtml(entry.incompleteNote)}</p>` : ''}
       <p class="ai-line-price">$${entry.lineTotal.toFixed(2)}</p>
     </div>
-  `
-    )
+  `;
+    })
     .join('');
 }
 
@@ -1464,6 +1601,8 @@ function renderAiLineItems(lineItems) {
 
     const colesUsable = line.coles && Number(line.colesLinePrice) > 0;
     const woolUsable = line.woolworths && Number(line.woolworthsLinePrice) > 0;
+    const colesKw = line.request?.keyword || '';
+    const woolKw = line.request?.keyword || '';
 
     row.innerHTML = `
       <p class="line-header">${escapeHtml(formatRequestLabel(line.request))}</p>
@@ -1472,10 +1611,10 @@ function renderAiLineItems(lineItems) {
           <strong>Coles</strong>
           ${
             colesUsable
-              ? `${buildAiProductPreview(line.coles, 'Coles')}
+              ? `${buildAiProductPreview(line.coles, 'Coles', colesKw)}
                  ${line.coles.pricingNote ? `<p class="pricing-note">${escapeHtml(line.coles.pricingNote)}</p>` : ''}
                  <p class="ai-line-price">$${line.colesLinePrice.toFixed(2)}</p>
-                 ${woolUsable ? buildItemSavingBadge(line.colesLinePrice, line.woolworthsLinePrice, 'Coles') : ''}`
+                 ${woolUsable ? buildItemSavingBadge(line.coles, line.woolworths, 'Coles') : ''}`
               : line.colesIncomplete
                 ? `<p class="missing">No match</p>
                    <p class="ai-line-price imputed">$${(line.colesSingleStorePrice ?? 0).toFixed(2)}</p>
@@ -1487,10 +1626,10 @@ function renderAiLineItems(lineItems) {
           <strong>Woolworths</strong>
           ${
             woolUsable
-              ? `${buildAiProductPreview(line.woolworths, 'Woolworths')}
+              ? `${buildAiProductPreview(line.woolworths, 'Woolworths', woolKw)}
                  ${line.woolworths.pricingNote ? `<p class="pricing-note">${escapeHtml(line.woolworths.pricingNote)}</p>` : ''}
                  <p class="ai-line-price">$${line.woolworthsLinePrice.toFixed(2)}</p>
-                 ${colesUsable ? buildItemSavingBadge(line.colesLinePrice, line.woolworthsLinePrice, 'Woolworths') : ''}`
+                 ${colesUsable ? buildItemSavingBadge(line.coles, line.woolworths, 'Woolworths') : ''}`
               : line.woolIncomplete
                 ? `<p class="missing">No match</p>
                    <p class="ai-line-price imputed">$${(line.woolworthsSingleStorePrice ?? 0).toFixed(2)}</p>

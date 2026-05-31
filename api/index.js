@@ -530,23 +530,86 @@ function findProductByBarcodeInRawList(rawList, barcode, supermarket) {
   return null;
 }
 
+const UNIT_PRICE_EPS = 0.009;
+
+/**
+ * Normalised price per kg for comparing packs of different sizes (e.g. 600g vs 500g).
+ */
+function extractUnitPricePerKg(product) {
+  if (!product) return null;
+  if (product.pricePerKg != null && Number(product.pricePerKg) > 0) {
+    return Number(product.pricePerKg);
+  }
+  const text = String(product.unit_price_text || '');
+  const kgMatch = text.match(/\$?\s*([\d.]+)\s*\/\s*kg\b/i);
+  if (kgMatch) {
+    const v = parseFloat(kgMatch[1]);
+    if (Number.isFinite(v) && v > 0) return Number(v.toFixed(4));
+  }
+  const per100g = text.match(/\$?\s*([\d.]+)\s*\/\s*100\s*g\b/i);
+  if (per100g) {
+    const v = parseFloat(per100g[1]);
+    if (Number.isFinite(v) && v > 0) return Number((v * 10).toFixed(4));
+  }
+  const shelf = product.packShelfPrice ?? product.price;
+  const kg = product.packWeightKg;
+  if (shelf != null && kg != null && kg > 0) {
+    return Number((shelf / kg).toFixed(4));
+  }
+  return null;
+}
+
+/**
+ * Pick cheaper store: compare $/kg first, then fall back to pack shelf price.
+ */
+function compareProductsForCheaper(woolworthsItem, colesItem) {
+  const woolKg = extractUnitPricePerKg(woolworthsItem);
+  const colesKg = extractUnitPricePerKg(colesItem);
+
+  if (woolKg != null && colesKg != null) {
+    const diffKg = Math.abs(woolKg - colesKg);
+    if (diffKg < UNIT_PRICE_EPS) {
+      return { cheaper: 'tie', saving: 0, compareBasis: 'per_kg' };
+    }
+    const cheaper = woolKg < colesKg ? 'Woolworths' : 'Coles';
+    const woolW = woolworthsItem.packWeightKg > 0 ? woolworthsItem.packWeightKg : 1;
+    const colesW = colesItem.packWeightKg > 0 ? colesItem.packWeightKg : 1;
+    const refKg = Math.min(woolW, colesW);
+    return {
+      cheaper,
+      saving: Number((diffKg * refKg).toFixed(2)),
+      compareBasis: 'per_kg',
+    };
+  }
+
+  const woolPrice = woolworthsItem.packShelfPrice ?? woolworthsItem.price ?? 0;
+  const colesPrice = colesItem.packShelfPrice ?? colesItem.price ?? 0;
+  const saving = Math.abs(woolPrice - colesPrice);
+  const cheaper =
+    woolPrice < colesPrice
+      ? 'Woolworths'
+      : colesPrice < woolPrice
+        ? 'Coles'
+        : 'tie';
+
+  return {
+    cheaper,
+    saving: Number(saving.toFixed(2)),
+    compareBasis: 'pack_price',
+  };
+}
+
 /** Ghép cặp so sánh khi quét barcode trúng cả 2 siêu thị */
 function buildDirectComparePair(woolworthsItem, colesItem) {
   if (!woolworthsItem || !colesItem) return null;
 
-  const saving = Math.abs(woolworthsItem.price - colesItem.price);
-  const cheaper =
-    woolworthsItem.price < colesItem.price
-      ? 'Woolworths'
-      : colesItem.price < woolworthsItem.price
-        ? 'Coles'
-        : 'tie';
+  const { cheaper, saving } = compareProductsForCheaper(woolworthsItem, colesItem);
 
   return {
     woolworths: woolworthsItem,
     coles: colesItem,
     cheaper,
-    saving: Number(saving.toFixed(2)),
+    saving,
     similarity: 1,
     matchType: 'barcode',
   };
@@ -2770,19 +2833,17 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
 
     usedColesIndexes.add(bestIndex);
     const colesItem = colesItems[bestIndex];
-    const saving = Math.abs(woolItem.price - colesItem.price);
-    const cheaper =
-      woolItem.price < colesItem.price
-        ? 'Woolworths'
-        : colesItem.price < woolItem.price
-          ? 'Coles'
-          : 'tie';
+    const { cheaper, saving, compareBasis } = compareProductsForCheaper(
+      woolItem,
+      colesItem
+    );
 
     pairs.push({
       woolworths: woolItem,
       coles: colesItem,
       cheaper,
-      saving: Number(saving.toFixed(2)),
+      saving,
+      compareBasis,
       similarity: Number(bestScore.toFixed(2)),
     });
   }
