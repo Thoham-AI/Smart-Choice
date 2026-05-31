@@ -736,6 +736,39 @@ body {
     font-weight: bold;
 }
 
+.ai-product-preview {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 6px 0 4px;
+}
+
+.ai-product-thumb {
+    width: 56px;
+    height: 56px;
+    object-fit: contain;
+    flex-shrink: 0;
+    display: block;
+    border-radius: 6px;
+    background: #fafafa;
+}
+
+.ai-product-name {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.35;
+    font-weight: 600;
+}
+
+.ai-product-name .product-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.ai-product-name .product-link:hover {
+    text-decoration: underline;
+}
+
 .ai-line-items h3 {
     margin: 0 0 10px;
     font-size: 1rem;
@@ -1344,6 +1377,11 @@ button:hover {
 [data-theme="dark"] .match-row,
 [data-theme="dark"] .ai-split-item,
 [data-theme="dark"] .ai-line-row,
+[data-theme="dark"] .ai-product-thumb,
+[data-theme="dark"] .match-thumb,
+[data-theme="dark"] .product-thumb {
+    background: #2d2d2d;
+}
 [data-theme="dark"] .cart-item {
     background: var(--bg-surface-muted);
     border-color: var(--border-color);

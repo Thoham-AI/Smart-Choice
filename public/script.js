@@ -753,6 +753,21 @@ function buildLinkedImage(item, className = 'match-thumb') {
   return buildProductLink(item.url, img);
 }
 
+/** Image + linked product name for AI analyzer rows (same pattern as Compare Prices). */
+function buildAiProductPreview(product, storeName) {
+  if (!product?.name) return '';
+  const item = {
+    ...product,
+    supermarket: product.supermarket || storeName || 'Product',
+  };
+  return `
+    <div class="ai-product-preview">
+      ${buildLinkedImage(item, 'ai-product-thumb')}
+      <p class="ai-product-name">${buildProductNameLink(item)}</p>
+    </div>
+  `;
+}
+
 function buildPriceBlock(item) {
   const specialTag = buildSpecialTag(item);
   const priceHtml = `<span class="price-tag">$${item.price.toFixed(2)}</span>`;
@@ -1175,10 +1190,14 @@ function renderSplitItems(items, storeLabel) {
       (entry) => `
     <div class="ai-split-item">
       <p class="request-label">${escapeHtml(formatRequestLabel(entry.request))}</p>
-      <p class="product-title">${escapeHtml(entry.product?.name || (entry.noMatch ? 'No match' : '—'))}</p>
+      ${
+        entry.product?.name
+          ? buildAiProductPreview(entry.product, storeLabel)
+          : `<p class="product-title">${escapeHtml(entry.noMatch ? 'No match' : '—')}</p>`
+      }
       ${entry.product?.pricingNote ? `<p class="pricing-note">${escapeHtml(entry.product.pricingNote)}</p>` : ''}
       ${entry.incompleteNote ? `<p class="imputed-note">${escapeHtml(entry.incompleteNote)}</p>` : ''}
-      <p>$${entry.lineTotal.toFixed(2)}</p>
+      <p class="ai-line-price">$${entry.lineTotal.toFixed(2)}</p>
     </div>
   `
     )
@@ -1213,7 +1232,7 @@ function renderAiLineItems(lineItems) {
           <strong>Coles</strong>
           ${
             colesUsable
-              ? `<p>${escapeHtml(line.coles.name)}</p>
+              ? `${buildAiProductPreview(line.coles, 'Coles')}
                  ${line.coles.pricingNote ? `<p class="pricing-note">${escapeHtml(line.coles.pricingNote)}</p>` : ''}
                  <p class="ai-line-price">$${line.colesLinePrice.toFixed(2)}</p>`
               : line.colesIncomplete
@@ -1227,7 +1246,7 @@ function renderAiLineItems(lineItems) {
           <strong>Woolworths</strong>
           ${
             woolUsable
-              ? `<p>${escapeHtml(line.woolworths.name)}</p>
+              ? `${buildAiProductPreview(line.woolworths, 'Woolworths')}
                  ${line.woolworths.pricingNote ? `<p class="pricing-note">${escapeHtml(line.woolworths.pricingNote)}</p>` : ''}
                  <p class="ai-line-price">$${line.woolworthsLinePrice.toFixed(2)}</p>`
               : line.woolIncomplete

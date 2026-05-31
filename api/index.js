@@ -12,6 +12,7 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const express = require('express');
 const axios   = require('axios');
 const cors    = require('cors');
+const { MongoClient } = require('mongodb');
 const OpenAI = require('openai');
 const stringSimilarity = require('string-similarity');
 
@@ -36,6 +37,120 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const openaiClient = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
+
+// ============================================================
+// 1b. MONGODB – API CACHE (database from URI path, default smartchoice)
+// ============================================================
+const MONGODB_URI = String(process.env.MONGODB_URI || '').trim();
+const DEFAULT_DB_NAME = 'smartchoice';
+const API_CACHE_COLLECTION = 'api_cache';
+const API_CACHE_TTL_MS =
+  Number(process.env.API_CACHE_TTL_MINUTES) > 0
+    ? Number(process.env.API_CACHE_TTL_MINUTES) * 60 * 1000
+    : 6 * 60 * 60 * 1000; // 6 hours
+
+let mongoClient = null;
+let mongoDb = null;
+let mongoDbName = DEFAULT_DB_NAME;
+let mongoConnectPromise = null;
+
+/**
+ * Parse database name from MongoDB URI path (e.g. ...mongodb.net/smartchoice?appName=...).
+ * Falls back to "smartchoice" when the URI has no database segment.
+ */
+function parseDatabaseNameFromUri(uri) {
+  if (!uri) return DEFAULT_DB_NAME;
+  try {
+    const normalized = uri
+      .replace(/^mongodb\+srv:\/\//i, 'https://')
+      .replace(/^mongodb:\/\//i, 'https://');
+    const url = new URL(normalized);
+    const segment = decodeURIComponent(
+      (url.pathname || '').replace(/^\//, '').split('/')[0] || ''
+    ).trim();
+    return segment || DEFAULT_DB_NAME;
+  } catch {
+    return DEFAULT_DB_NAME;
+  }
+}
+
+/** Lazy singleton MongoDB connection (safe for local + serverless cold starts). */
+async function connectMongo() {
+  if (!MONGODB_URI) return null;
+  if (mongoDb) return mongoDb;
+  if (mongoConnectPromise) return mongoConnectPromise;
+
+  mongoConnectPromise = (async () => {
+    mongoDbName = parseDatabaseNameFromUri(MONGODB_URI);
+    mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+    mongoDb = mongoClient.db(mongoDbName);
+    await mongoDb.command({ ping: 1 });
+    await mongoDb.collection(API_CACHE_COLLECTION).createIndex(
+      { expiresAt: 1 },
+      { expireAfterSeconds: 0, name: 'api_cache_ttl' }
+    );
+    return mongoDb;
+  })();
+
+  try {
+    return await mongoConnectPromise;
+  } catch (error) {
+    mongoConnectPromise = null;
+    mongoClient = null;
+    mongoDb = null;
+    throw error;
+  }
+}
+
+function getApiCacheCollection() {
+  if (!mongoDb) return null;
+  return mongoDb.collection(API_CACHE_COLLECTION);
+}
+
+function buildApiCacheId(supermarket, keyword) {
+  return `${supermarket}:${String(keyword || '').trim().toLowerCase()}`;
+}
+
+async function readApiCache(supermarket, keyword) {
+  const collection = getApiCacheCollection();
+  if (!collection) return null;
+
+  const doc = await collection.findOne({ _id: buildApiCacheId(supermarket, keyword) });
+  if (!doc?.payload) return null;
+  if (doc.expiresAt && doc.expiresAt <= new Date()) return null;
+  return doc.payload;
+}
+
+async function writeApiCache(supermarket, keyword, payload) {
+  const collection = getApiCacheCollection();
+  if (!collection) return;
+
+  const now = new Date();
+  await collection.updateOne(
+    { _id: buildApiCacheId(supermarket, keyword) },
+    {
+      $set: {
+        supermarket,
+        keyword: String(keyword || '').trim(),
+        payload,
+        updatedAt: now,
+        expiresAt: new Date(now.getTime() + API_CACHE_TTL_MS),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+/** Connect on local startup and print database name for easy verification. */
+async function initMongoForLocalStartup() {
+  if (!MONGODB_URI) {
+    console.warn('MONGODB_URI is not set – supermarket API cache disabled.');
+    return;
+  }
+  await connectMongo();
+  console.log(`Connected successfully to Database: ${mongoDbName}`);
+}
 
 // ============================================================
 // 2. KHỞI TẠO EXPRESS
@@ -2687,6 +2802,20 @@ async function fetchStoreRawList(supermarket, keyword) {
     );
   }
 
+  const query = String(keyword || '').trim();
+  if (!query) return [];
+
+  try {
+    await connectMongo();
+    const cached = await readApiCache(supermarket, query);
+    if (cached != null) {
+      console.log(`  💾 ${supermarket} cache hit: "${query}"`);
+      return cached;
+    }
+  } catch (cacheErr) {
+    console.warn(`  ⚠ MongoDB cache read failed (${supermarket}):`, cacheErr.message);
+  }
+
   const isColes = supermarket === 'Coles';
   const host = isColes ? COLES_HOST : WOOLWORTHS_HOST;
   const path = isColes ? '/coles/search' : '/woolworths/search';
@@ -2696,7 +2825,7 @@ async function fetchStoreRawList(supermarket, keyword) {
   for (let attempt = 1; attempt <= API_MAX_RETRIES; attempt++) {
     try {
       const response = await axios.get(url, {
-        params: { query: keyword, page: 1 },
+        params: { query, page: 1 },
         headers: {
           'x-rapidapi-key': RAPIDAPI_KEY,
           'x-rapidapi-host': host,
@@ -2704,7 +2833,16 @@ async function fetchStoreRawList(supermarket, keyword) {
         timeout: API_TIMEOUT_MS,
       });
 
-      return extractResultsArray(response.data);
+      const rawList = extractResultsArray(response.data);
+
+      try {
+        await connectMongo();
+        await writeApiCache(supermarket, query, rawList);
+      } catch (cacheErr) {
+        console.warn(`  ⚠ MongoDB cache write failed (${supermarket}):`, cacheErr.message);
+      }
+
+      return rawList;
     } catch (error) {
       lastError = error;
       const retryable = isRetryableApiError(error);
@@ -3126,6 +3264,10 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     openaiConfigured: Boolean(openaiClient),
+    mongoConfigured: Boolean(MONGODB_URI),
+    mongoConnected: Boolean(mongoDb),
+    database: mongoDb ? mongoDbName : null,
+    apiCacheCollection: API_CACHE_COLLECTION,
   });
 });
 
@@ -3138,6 +3280,9 @@ if (process.env.NODE_ENV !== 'production') {
   const PORT = 3000;
   app.listen(PORT, () => {
     console.log(`🚀 SmartChoice đang chạy mượt mà tại: http://localhost:${PORT}`);
+    initMongoForLocalStartup().catch((err) => {
+      console.error('MongoDB startup connection failed:', err.message);
+    });
   });
 }
 
