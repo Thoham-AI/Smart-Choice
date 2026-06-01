@@ -5,6 +5,7 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 
 // .env nằm ở thư mục gốc repo (một cấp trên api/)
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
@@ -19,6 +20,80 @@ const stringSimilarity = require('string-similarity');
 
 /** Thư mục front-end tĩnh: ../public (tương đối với api/index.js) */
 const PUBLIC_DIR = path.join(__dirname, '../public');
+const INDEX_HTML_PATH = path.join(PUBLIC_DIR, 'index.html');
+
+/** Link Tally mặc định (placeholder) — thay bằng FEEDBACK_TALLY_URL trong .env */
+const FEEDBACK_TALLY_URL_FALLBACK = 'https://tally.so/r/your-form-id';
+
+let cachedHomeHtml = null;
+let cachedHomeHtmlTallyUrl = null;
+
+/**
+ * URL form Góp ý Tally — đọc từ biến môi trường FEEDBACK_TALLY_URL (local + Vercel).
+ */
+function getFeedbackTallyUrl() {
+  const raw = String(process.env.FEEDBACK_TALLY_URL || '').trim();
+  if (raw.startsWith('https://') || raw.startsWith('http://')) {
+    return raw;
+  }
+  return FEEDBACK_TALLY_URL_FALLBACK;
+}
+
+/**
+ * Chuỗi HTML nút Feedback nhúng trong Backend (href từ getFeedbackTallyUrl).
+ * Giữ target="_blank" và rel="noopener noreferrer" — mở tab mới, không rời trang so sánh giá.
+ */
+function buildFeedbackFabHtml() {
+  const tallyUrl = getFeedbackTallyUrl().replace(/"/g, '&quot;');
+
+  return `    <!-- Nút Góp ý — link Tally từ FEEDBACK_TALLY_URL, mở tab mới -->
+    <a
+        href="${tallyUrl}"
+        id="feedback-fab"
+        class="feedback-fab"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Gửi góp ý — mở trong tab mới"
+        title="Feedback"
+    >💬 <span class="feedback-fab-text">Feedback</span></a>`;
+}
+
+/**
+ * Đọc index.html, thay khối nút Feedback bằng chuỗi HTML chuẩn từ Backend.
+ */
+function buildHomePageHtml() {
+  const tallyUrl = getFeedbackTallyUrl();
+  if (cachedHomeHtml && cachedHomeHtmlTallyUrl === tallyUrl) {
+    return cachedHomeHtml;
+  }
+
+  let html = fs.readFileSync(INDEX_HTML_PATH, 'utf8');
+
+  html = html.replace(
+    /<!--\s*Góp ý[\s\S]*?<a[\s\S]*?id="feedback-fab"[\s\S]*?<\/a>/i,
+    buildFeedbackFabHtml()
+  );
+
+  // Đồng bộ mọi href Tally còn sót trong file nguồn
+  html = html.replace(/https:\/\/tally\.so\/r\/your-form-id/g, tallyUrl);
+
+  cachedHomeHtml = html;
+  cachedHomeHtmlTallyUrl = tallyUrl;
+  return html;
+}
+
+/**
+ * Chèn URL Tally đúng vào trang terms (nút feedback-fab).
+ */
+function injectFeedbackLinkIntoHtml(html) {
+  const tallyUrl = getFeedbackTallyUrl();
+  let out = html.replace(
+    /<!--\s*Góp ý[\s\S]*?<a[\s\S]*?id="feedback-fab"[\s\S]*?<\/a>/i,
+    buildFeedbackFabHtml()
+  );
+  out = out.replace(/https:\/\/tally\.so\/r\/your-form-id/g, tallyUrl);
+  return out;
+}
 
 // ============================================================
 // 1. CẤU HÌNH HẰNG SỐ
@@ -143,25 +218,50 @@ function getSiteStatsCollection() {
 }
 
 /**
- * Atomically increment and return the public page view counter (site_stats.page_views).
+ * Tăng bộ đếm lượt xem công khai (document _id: "page_views" trong collection site_stats).
+ * Tương thích MongoDB driver trên Vercel Serverless (document trả về trực tiếp hoặc .value).
  */
 async function incrementPageViews() {
   const collection = getSiteStatsCollection();
   if (!collection) return null;
 
   const now = new Date();
-  const doc = await collection.findOneAndUpdate(
-    { _id: SITE_STATS_PAGE_VIEWS_ID },
-    {
-      $inc: { views: 1 },
-      $set: { updatedAt: now },
-      $setOnInsert: { createdAt: now },
-    },
-    { upsert: true, returnDocument: 'after' }
-  );
+  let doc = null;
 
-  const views = Number(doc?.views);
-  return Number.isFinite(views) && views >= 0 ? views : 1;
+  try {
+    const result = await collection.findOneAndUpdate(
+      { _id: SITE_STATS_PAGE_VIEWS_ID },
+      {
+        $inc: { views: 1 },
+        $set: { updatedAt: now },
+        $setOnInsert: { createdAt: now },
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    // Driver 6.x: thường trả document; một số phiên bản bọc trong { value }
+    if (result && typeof result === 'object' && 'value' in result) {
+      doc = result.value;
+    } else {
+      doc = result;
+    }
+  } catch (err) {
+    console.error('  ❌ incrementPageViews findOneAndUpdate:', err.message);
+    return null;
+  }
+
+  let views = Number(doc?.views);
+  if (!Number.isFinite(views) || views < 0) {
+    try {
+      const fallback = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
+      views = Number(fallback?.views);
+    } catch (readErr) {
+      console.error('  ❌ incrementPageViews fallback read:', readErr.message);
+      return null;
+    }
+  }
+
+  return Number.isFinite(views) && views >= 0 ? views : null;
 }
 
 function buildPriceHistoryId(watchId, supermarket) {
@@ -352,9 +452,32 @@ app.use((_req, res, next) => {
   res.set('Expires', '0');
   next();
 });
-// Clean /terms URL (static folder alone may only serve /terms/ or /terms/index.html)
+// Trang Terms — chèn link Feedback Tally từ FEEDBACK_TALLY_URL rồi res.send
 app.get(['/terms', '/terms/'], (_req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, 'terms', 'index.html'));
+  try {
+    const termsPath = path.join(PUBLIC_DIR, 'terms', 'index.html');
+    const html = injectFeedbackLinkIntoHtml(fs.readFileSync(termsPath, 'utf8'));
+    res.type('html').send(html);
+  } catch (error) {
+    console.error('  ❌ Không tải được trang Terms:', error.message);
+    res.status(500).send('Cannot load terms page.');
+  }
+});
+
+/**
+ * Trang chủ — gửi HTML qua res.send (monolithic string sau khi chèn nút Feedback chuẩn).
+ * Không dùng script Front-end ghi đè href; trình duyệt mở link Tally bằng thẻ <a> thuần.
+ */
+app.get('/', (_req, res) => {
+  try {
+    if (!cachedHomeHtml) {
+      cachedHomeHtml = buildHomePageHtml();
+    }
+    res.type('html').send(cachedHomeHtml);
+  } catch (error) {
+    console.error('  ❌ Không tải được trang chủ:', error.message);
+    res.status(500).send('Cannot load home page.');
+  }
 });
 
 // Phục vụ CSS/JS/HTML từ public/ (đường dẫn tuyệt đối, không phụ thuộc cwd)
@@ -3756,29 +3879,43 @@ app.get('/api/watchlist/price-history', async (req, res) => {
 });
 
 // ============================================================
-// 7e. PUBLIC PAGE VIEW COUNTER: GET /api/pageviews
+// 7e. BỘ ĐẾM PAGEVIEWS CÔNG KHAI: GET /api/pageviews
 // ============================================================
 
 /**
- * Increments the global view counter in MongoDB and returns the new total.
- * Intentionally lightweight — safe to call once per full page load from the client.
+ * Mỗi lần gọi (thường 1 lần / lượt tải trang): tăng views +1 trong site_stats, trả tổng hiện tại.
+ * Không cấu hình MongoDB hoặc lỗi kết nối → 503 (không làm sập trang chủ).
  */
 app.get('/api/pageviews', async (_req, res) => {
   if (!MONGODB_URI) {
     return res.status(503).json({
-      error: 'Page view counter is unavailable (MongoDB not configured).',
+      error: 'Chưa cấu hình MONGODB_URI — bộ đếm pageviews tạm tắt.',
       total_views: null,
     });
   }
 
   try {
-    await connectMongo();
+    const db = await connectMongo();
+    if (!db) {
+      return res.status(503).json({
+        error: 'Không kết nối được MongoDB.',
+        total_views: null,
+      });
+    }
+
     const totalViews = await incrementPageViews();
+    if (totalViews == null) {
+      return res.status(503).json({
+        error: 'Không cập nhật được bộ đếm pageviews.',
+        total_views: null,
+      });
+    }
+
     return res.json({ total_views: totalViews });
   } catch (error) {
     console.error('  ❌ Pageviews error:', error.message);
-    return res.status(500).json({
-      error: error.message || 'Could not update page view counter.',
+    return res.status(503).json({
+      error: error.message || 'Không đọc/ghi được pageviews.',
       total_views: null,
     });
   }

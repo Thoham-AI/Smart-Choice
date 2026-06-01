@@ -1753,12 +1753,19 @@ button:hover {
     color: var(--accent);
 }
 
+/* Mặc định ẩn — app.js bật .is-visible sau khi /api/pageviews thành công */
 .pageviews-display {
+    display: none;
     margin: 0 0 12px;
     font-size: 0.72rem;
     line-height: 1.4;
     color: var(--text-muted);
     letter-spacing: 0.01em;
+    text-align: center;
+}
+
+.pageviews-display.is-visible {
+    display: block;
 }
 
 .pageviews-display #pageviews-count {
@@ -1777,21 +1784,24 @@ button:hover {
     text-align: left;
 }
 
-/* Fixed feedback button — bottom-right, clear of mobile safe areas */
+/* Nút Feedback cố định — z-index cao hơn cart-panel (1000) để luôn bấm được */
 .feedback-fab {
     position: fixed;
     right: max(16px, env(safe-area-inset-right, 0px));
-    bottom: max(16px, env(safe-area-inset-bottom, 0px));
-    z-index: 900;
+    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    z-index: 1101;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
     padding: 10px 14px;
     font-size: 0.8125rem;
     font-weight: 600;
-    line-height: 1;
+    line-height: 1.2;
     color: var(--text-primary);
     text-decoration: none;
+    cursor: pointer;
+    pointer-events: auto;
     background: var(--bg-surface);
     border: 1px solid var(--border-color);
     border-radius: 999px;
@@ -1806,22 +1816,20 @@ button:hover {
     box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
 }
 
-.feedback-fab-icon {
-    font-size: 1rem;
-    line-height: 1;
-}
-
 .feedback-fab-text {
     display: inline;
+    pointer-events: none;
 }
 
-@media (max-width: 480px) {
+/* Mobile nhỏ: chỉ icon tròn 💬 */
+@media (max-width: 576px) {
     .feedback-fab {
-        padding: 12px;
+        padding: 0;
         border-radius: 50%;
         width: 48px;
         height: 48px;
-        justify-content: center;
+        min-width: 48px;
+        font-size: 1.25rem;
     }
 
     .feedback-fab-text {
@@ -2015,7 +2023,7 @@ button:hover {
     }
 
     .feedback-fab {
-        bottom: max(12px, env(safe-area-inset-bottom, 0px));
+        bottom: calc(16px + env(safe-area-inset-bottom, 0px));
         right: max(12px, env(safe-area-inset-right, 0px));
     }
 }

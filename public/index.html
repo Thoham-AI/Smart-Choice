@@ -11,7 +11,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
     <div class="app-container">
@@ -266,28 +266,25 @@
         </footer>
     </div>
 
-    <!-- Community feedback (opens Tally form in a new tab) -->
+    <!-- Nút Góp ý: href Tally cố định; Backend (api/index.js) cũng chèn lại khi res.send('/') -->
     <a
         href="https://tally.so/r/your-form-id"
         id="feedback-fab"
         class="feedback-fab"
         target="_blank"
         rel="noopener noreferrer"
-        aria-label="Send feedback — opens in a new tab"
-        title="Send feedback"
-    >
-        <span class="feedback-fab-icon" aria-hidden="true">💬</span>
-        <span class="feedback-fab-text">Feedback</span>
-    </a>
+        aria-label="Gửi góp ý — mở trong tab mới"
+        title="Feedback"
+    >💬 <span class="feedback-fab-text">Feedback</span></a>
 
     <!-- Barcode scanner library (bundled locally under public/) -->
     <script src="/html5-qrcode.min.js"></script>
-    <!-- Chart.js + jsPDF, then app.js (watchlist/PDF), then script.js (main UI) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="app.js?v=2"></script>
     <script src="script.js?v=38"></script>
     <script src="barcode-scanner.js?v=4"></script>
+    <!-- app.js: Pageviews + watchlist/PDF (không ghi đè link Feedback) -->
+    <script src="app.js?v=4"></script>
 
     <!--
       Vercel Web Analytics + Speed Insights (chỉ hoạt động khi deploy trên Vercel).
