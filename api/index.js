@@ -61,6 +61,9 @@ const DEFAULT_DB_NAME = 'smartchoice';
 const API_CACHE_COLLECTION = 'api_cache';
 const PRICE_HISTORY_COLLECTION = 'price_history';
 const PRICE_HISTORY_MAX_POINTS = 90;
+const SITE_STATS_COLLECTION = 'site_stats';
+/** Single document id for global page view counter. */
+const SITE_STATS_PAGE_VIEWS_ID = 'page_views';
 const API_CACHE_TTL_MS =
   Number(process.env.API_CACHE_TTL_MINUTES) > 0
     ? Number(process.env.API_CACHE_TTL_MINUTES) * 60 * 1000
@@ -132,6 +135,33 @@ function getApiCacheCollection() {
 function getPriceHistoryCollection() {
   if (!mongoDb) return null;
   return mongoDb.collection(PRICE_HISTORY_COLLECTION);
+}
+
+function getSiteStatsCollection() {
+  if (!mongoDb) return null;
+  return mongoDb.collection(SITE_STATS_COLLECTION);
+}
+
+/**
+ * Atomically increment and return the public page view counter (site_stats.page_views).
+ */
+async function incrementPageViews() {
+  const collection = getSiteStatsCollection();
+  if (!collection) return null;
+
+  const now = new Date();
+  const doc = await collection.findOneAndUpdate(
+    { _id: SITE_STATS_PAGE_VIEWS_ID },
+    {
+      $inc: { views: 1 },
+      $set: { updatedAt: now },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true, returnDocument: 'after' }
+  );
+
+  const views = Number(doc?.views);
+  return Number.isFinite(views) && views >= 0 ? views : 1;
 }
 
 function buildPriceHistoryId(watchId, supermarket) {
@@ -322,6 +352,11 @@ app.use((_req, res, next) => {
   res.set('Expires', '0');
   next();
 });
+// Clean /terms URL (static folder alone may only serve /terms/ or /terms/index.html)
+app.get(['/terms', '/terms/'], (_req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'terms', 'index.html'));
+});
+
 // Phục vụ CSS/JS/HTML từ public/ (đường dẫn tuyệt đối, không phụ thuộc cwd)
 app.use(express.static(PUBLIC_DIR));
 
@@ -3720,6 +3755,35 @@ app.get('/api/watchlist/price-history', async (req, res) => {
   }
 });
 
+// ============================================================
+// 7e. PUBLIC PAGE VIEW COUNTER: GET /api/pageviews
+// ============================================================
+
+/**
+ * Increments the global view counter in MongoDB and returns the new total.
+ * Intentionally lightweight — safe to call once per full page load from the client.
+ */
+app.get('/api/pageviews', async (_req, res) => {
+  if (!MONGODB_URI) {
+    return res.status(503).json({
+      error: 'Page view counter is unavailable (MongoDB not configured).',
+      total_views: null,
+    });
+  }
+
+  try {
+    await connectMongo();
+    const totalViews = await incrementPageViews();
+    return res.json({ total_views: totalViews });
+  } catch (error) {
+    console.error('  ❌ Pageviews error:', error.message);
+    return res.status(500).json({
+      error: error.message || 'Could not update page view counter.',
+      total_views: null,
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/health', (_req, res) => {
   res.json({
@@ -3729,6 +3793,7 @@ app.get('/health', (_req, res) => {
     mongoConnected: Boolean(mongoDb),
     database: mongoDb ? mongoDbName : null,
     apiCacheCollection: API_CACHE_COLLECTION,
+    siteStatsCollection: SITE_STATS_COLLECTION,
   });
 });
 

@@ -11,7 +11,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
     <div class="app-container">
@@ -79,8 +79,19 @@
         <section class="search-section">
             <div class="search-bar">
                 <input type="text" id="itemInput" placeholder="What are you looking for? (e.g. Apples)">
-                <button type="button" id="scannerBtn" class="scanner-open-btn" title="Scan product barcode" aria-label="Scan barcode">📷</button>
-                <button type="button" onclick="searchProducts()" id="searchBtn">Compare Prices</button>
+                <div class="search-bar-actions">
+                    <button type="button" onclick="searchProducts()" id="searchBtn">Compare Prices</button>
+                    <div class="scanner-action">
+                        <button
+                            type="button"
+                            id="scannerBtn"
+                            class="scanner-open-btn"
+                            title="Scan product barcode"
+                            aria-label="Open barcode scanner"
+                        >📷</button>
+                        <span class="scanner-label">barcode scanner</span>
+                    </div>
+                </div>
             </div>
             <section id="recent-searches-section" class="recent-searches hidden" aria-label="Recent searches">
                 <div class="recent-searches-header">
@@ -123,6 +134,10 @@
                 ></textarea>
                 <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List by AI</button>
             </div>
+            <p class="ai-list-disclaimer">
+                *Prices are indicative and optimized by AI. Please verify directly with retailers before purchasing.
+                See our <a href="/terms" class="inline-legal-link">Disclaimer</a>.
+            </p>
             <div
                 id="ai-analyze-progress"
                 class="ai-analyze-progress hidden"
@@ -234,8 +249,16 @@
             <button type="button" id="clear-cart" class="clear-cart-btn">Clear cart</button>
         </aside>
 
-        <footer class="disclaimer-footer">
-            <p>
+        <footer class="site-footer" role="contentinfo">
+            <p class="site-footer-meta">
+                &copy; 2026 SmartChoice. Built for the community.
+                |
+                <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
+            </p>
+            <p id="pageviews-display" class="pageviews-display" hidden>
+                📊 Pageviews: <span id="pageviews-count">—</span>
+            </p>
+            <p class="site-footer-legal">
                 SmartChoice is an independent platform built for consumer price comparison purposes.
                 We are not officially affiliated with, do not represent, and are not authorized by Coles Supermarkets or Woolworths Group.
                 Brand names, logos, and product images are the copyright of their respective owners.
@@ -243,12 +266,26 @@
         </footer>
     </div>
 
+    <!-- Community feedback (opens Tally form in a new tab) -->
+    <a
+        href="https://tally.so/r/your-form-id"
+        id="feedback-fab"
+        class="feedback-fab"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Send feedback — opens in a new tab"
+        title="Send feedback"
+    >
+        <span class="feedback-fab-icon" aria-hidden="true">💬</span>
+        <span class="feedback-fab-text">Feedback</span>
+    </a>
+
     <!-- Barcode scanner library (bundled locally under public/) -->
     <script src="/html5-qrcode.min.js"></script>
     <!-- Chart.js + jsPDF, then app.js (watchlist/PDF), then script.js (main UI) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="app.js?v=1"></script>
+    <script src="app.js?v=2"></script>
     <script src="script.js?v=38"></script>
     <script src="barcode-scanner.js?v=4"></script>
 

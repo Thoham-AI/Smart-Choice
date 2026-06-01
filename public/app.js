@@ -1,9 +1,71 @@
 /**
- * SmartChoice – Watchlist charts (Chart.js) & shopping-list PDF export (jsPDF).
- * Loaded after script.js; relies on globals: API_BASE, apiFetch, loadCart, escapeHtml.
+ * SmartChoice – Watchlist charts, PDF export, pageview counter, shared UI helpers.
+ * Loaded before script.js on the home page; terms page loads this with defer for pageviews only.
  */
 
 (function initSmartChoiceApp() {
+  /** Replace with your live Tally (or other) feedback form URL. */
+  const FEEDBACK_FORM_URL = 'https://tally.so/r/your-form-id';
+
+  // --- Public page view counter (non-blocking, does not affect AI progress UI) ---
+
+  function formatPageViewCount(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return '—';
+    return n.toLocaleString('en-AU');
+  }
+
+  /**
+   * Fetch /api/pageviews after load using idle time so first paint stays fast.
+   */
+  function initPageViewCounter() {
+    const display = document.getElementById('pageviews-display');
+    const countEl = document.getElementById('pageviews-count');
+    if (!display || !countEl) return;
+
+    const run = () => {
+      const base =
+        typeof API_BASE !== 'undefined' && API_BASE
+          ? API_BASE
+          : window.location?.origin || '';
+
+      fetch(`${base}/api/pageviews`, { method: 'GET', credentials: 'same-origin' })
+        .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+        .then(({ ok, data }) => {
+          if (!ok || data.total_views == null) return;
+          countEl.textContent = formatPageViewCount(data.total_views);
+          display.hidden = false;
+        })
+        .catch(() => {
+          /* Silent fail — footer counter is optional polish */
+        });
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(run, { timeout: 4000 });
+    } else {
+      window.setTimeout(run, 250);
+    }
+  }
+
+  function applyFeedbackFormUrl() {
+    document.querySelectorAll('#feedback-fab, [data-feedback-link]').forEach((el) => {
+      if (el instanceof HTMLAnchorElement) {
+        el.href = FEEDBACK_FORM_URL;
+      }
+    });
+  }
+
+  if (document.readyState === 'complete') {
+    applyFeedbackFormUrl();
+    initPageViewCounter();
+  } else {
+    window.addEventListener('load', () => {
+      applyFeedbackFormUrl();
+      initPageViewCounter();
+    });
+  }
+
   /** Active Chart.js instances keyed by watchlist entry id (destroy before redraw). */
   const watchlistChartRegistry = new Map();
 

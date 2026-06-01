@@ -16,6 +16,10 @@
       "destination": "/api/index.js"
     },
     {
+      "source": "/terms",
+      "destination": "/public/terms/index.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/public/$1"
     }
