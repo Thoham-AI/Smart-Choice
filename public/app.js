@@ -1,6 +1,6 @@
 /**
- * SmartChoice – Biểu đồ watchlist, xuất PDF.
- * Pageviews: public/pageviews.js | Feedback: href trong HTML (api/index.js).
+ * SmartChoice – Biểu đồ watchlist, xuất PDF, bộ đếm pageviews.
+ * Nút Feedback: href cố định trong HTML (api/index.js).
  */
 
 (function initSmartChoiceApp() {
@@ -566,4 +566,80 @@
     exportCartToPdf,
     exportAiListToPdf,
   };
+
+  // ============================================================
+  // Pageviews — gọi sau khi trang load (idle), không chặn UI / AI
+  // ============================================================
+
+  function formatPageViewCount(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return '—';
+    return n.toLocaleString('en-AU');
+  }
+
+  function showPageViewsFooter(totalViews) {
+    const display = document.getElementById('pageviews-display');
+    const countEl = document.getElementById('pageviews-count');
+    if (!display || !countEl) return;
+
+    countEl.textContent = formatPageViewCount(totalViews);
+    display.removeAttribute('hidden');
+    display.classList.add('is-visible');
+    display.style.display = 'block';
+  }
+
+  async function fetchAndShowPageViews() {
+    const apiRoot =
+      typeof API_BASE !== 'undefined' && API_BASE
+        ? API_BASE
+        : window.location?.origin || '';
+
+    if (!apiRoot) return;
+
+    try {
+      const response = await fetch(`${apiRoot}/api/pageviews`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (response.ok && data.total_views != null) {
+        showPageViewsFooter(data.total_views);
+      }
+    } catch (err) {
+      console.warn('[SmartChoice] Pageviews:', err.message || err);
+    }
+  }
+
+  function schedulePageViewCounter() {
+    const run = () => fetchAndShowPageViews();
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(run, { timeout: 4000 });
+    } else {
+      window.setTimeout(run, 300);
+    }
+  }
+
+  function bootPageViewCounter() {
+    const startPageViews = () => {
+      if (window.__smartchoicePageViewsScheduled) return;
+      window.__smartchoicePageViewsScheduled = true;
+      schedulePageViewCounter();
+    };
+
+    if (document.readyState === 'complete') {
+      startPageViews();
+    } else {
+      window.addEventListener('load', startPageViews, { once: true });
+    }
+  }
+
+  bootPageViewCounter();
 })();

@@ -106,8 +106,14 @@ const WOOLWORTHS_HOST = 'woolworths-australia-product-category-api.p.rapidapi.co
 const RESULT_LIMIT = 20;   // số sản phẩm tối đa mỗi siêu thị
 const SIMILARITY_THRESHOLD = 0.58; // Ngưỡng sau khi đã tính điểm tổng hợp (tên + size + loại)
 const LIST_MATCH_THRESHOLD = 0.38; // Ngưỡng chọn sản phẩm khớp nhất cho từng dòng giỏ AI
-const API_TIMEOUT_MS = 60000; // Một số request RapidAPI có thể chậm
+const API_TIMEOUT_MS = 28000; // RapidAPI search — tránh chờ 60s khi cache miss
 const API_MAX_RETRIES = 2;
+/** MongoDB: fail nhanh nếu Atlas/local không phản hồi (không chặn search). */
+const MONGO_CONNECT_TIMEOUT_MS = 5000;
+const API_CACHE_READ_TIMEOUT_MS = 3000;
+/** Tra cứu store ID tối đa — sau đó search chỉ dùng lat/lng. */
+const STORE_LOOKUP_MAX_MS = 6000;
+const STORE_LOCATOR_REQUEST_TIMEOUT_MS = 5000;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 /** Default map centre (Sydney CBD) when the client does not share GPS coordinates. */
@@ -122,6 +128,8 @@ const requestLocationContext = new AsyncLocalStorage();
 
 /** In-memory cache for nearest store IDs resolved from lat/lng (1 hour TTL). */
 const nearestStoreIdCache = new Map();
+/** Gom request song song Coles+WW — tránh gọi locator 2 lần cùng lúc. */
+const nearestStoreLookupInflight = new Map();
 const NEAREST_STORE_CACHE_TTL_MS = 60 * 60 * 1000;
 
 const openaiClient = process.env.OPENAI_API_KEY
@@ -139,13 +147,6 @@ const PRICE_HISTORY_MAX_POINTS = 90;
 const SITE_STATS_COLLECTION = 'site_stats';
 /** Single document id for global page view counter. */
 const SITE_STATS_PAGE_VIEWS_ID = 'page_views';
-/** Mốc khởi đầu hiển thị pageviews — đếm tăng dần từ số này (có thể ghi đè bằng PAGE_VIEWS_BASELINE trong .env). */
-const PAGE_VIEWS_BASELINE =
-  Number(process.env.PAGE_VIEWS_BASELINE) > 0
-    ? Math.floor(Number(process.env.PAGE_VIEWS_BASELINE))
-    : 125;
-/** Trường đánh dấu đã áp dụng mốc baseline (đổi baseline thì tăng version). */
-const PAGE_VIEWS_BASELINE_VERSION = PAGE_VIEWS_BASELINE;
 const API_CACHE_TTL_MS =
   Number(process.env.API_CACHE_TTL_MINUTES) > 0
     ? Number(process.env.API_CACHE_TTL_MINUTES) * 60 * 1000
@@ -184,7 +185,11 @@ async function connectMongo() {
 
   mongoConnectPromise = (async () => {
     mongoDbName = parseDatabaseNameFromUri(MONGODB_URI);
-    mongoClient = new MongoClient(MONGODB_URI);
+    mongoClient = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
+      connectTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
+      socketTimeoutMS: 12000,
+    });
     await mongoClient.connect();
     mongoDb = mongoClient.db(mongoDbName);
     await mongoDb.command({ ping: 1 });
@@ -225,97 +230,102 @@ function getSiteStatsCollection() {
 }
 
 /**
- * Đặt bộ đếm về (baseline - 1) để lượt tăng tiếp theo trả về đúng baseline (ví dụ 125).
- * Chạy khi chưa có bản ghi hoặc đổi mốc baseline / số đang thấp hơn mốc.
+ * Giới hạn thời gian chờ — dùng cho MongoDB / tra cứu store khi không có cache.
  */
-async function ensurePageViewsBaseline(collection) {
-  const now = new Date();
-  const seedViews = PAGE_VIEWS_BASELINE - 1;
+function withTimeout(promise, ms, label = 'operation') {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms
+      );
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
-  const existing = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
-
-  if (!existing) {
-    await collection.updateOne(
-      { _id: SITE_STATS_PAGE_VIEWS_ID },
-      {
-        $set: {
-          views: seedViews,
-          countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
-          updatedAt: now,
-        },
-        $setOnInsert: { createdAt: now },
-      },
-      { upsert: true }
+/**
+ * Đọc cache API — timeout ngắn; miss thì gọi RapidAPI ngay, không chờ Mongo lâu.
+ */
+async function tryReadApiCache(supermarket, keyword, location) {
+  if (!MONGODB_URI) return null;
+  try {
+    return await withTimeout(
+      (async () => {
+        await connectMongo();
+        return readApiCache(supermarket, keyword, location);
+      })(),
+      API_CACHE_READ_TIMEOUT_MS,
+      'MongoDB cache read'
     );
-    console.log(
-      `  📊 Pageviews: tạo mới, bắt đầu từ ${PAGE_VIEWS_BASELINE} (lưu ${seedViews})`
-    );
-    return;
-  }
-
-  const views = Number(existing.views);
-  const patch = { updatedAt: now };
-
-  if (existing.countingBaseline !== PAGE_VIEWS_BASELINE_VERSION) {
-    patch.countingBaseline = PAGE_VIEWS_BASELINE_VERSION;
-  }
-
-  // Chỉ hạ về (baseline - 1) khi số đang thấp hơn mốc — không reset mỗi lượt xem về 125
-  if (!Number.isFinite(views) || views < seedViews) {
-    patch.views = seedViews;
-    console.log(
-      `  📊 Pageviews: nâng mốc lên ${PAGE_VIEWS_BASELINE} (đang lưu ${seedViews})`
-    );
-  }
-
-  if (Object.keys(patch).length > 1) {
-    await collection.updateOne(
-      { _id: SITE_STATS_PAGE_VIEWS_ID },
-      { $set: patch }
-    );
+  } catch (err) {
+    console.warn(`  ⚠ Cache read skipped (${supermarket}):`, err.message);
+    return null;
   }
 }
 
 /**
- * Tăng bộ đếm lượt xem công khai (document _id: "page_views" trong collection site_stats).
- * Tương thích MongoDB driver trên Vercel Serverless (document trả về trực tiếp hoặc .value).
+ * Ghi cache nền — không chặn response trả về cho người dùng.
+ */
+function scheduleWriteApiCache(supermarket, keyword, payload, location) {
+  if (!MONGODB_URI) return;
+  void (async () => {
+    try {
+      await connectMongo();
+      await writeApiCache(supermarket, keyword, payload, location);
+    } catch (err) {
+      console.warn(`  ⚠ MongoDB cache write failed (${supermarket}):`, err.message);
+    }
+  })();
+}
+
+/**
+ * Tăng bộ đếm lượt xem (document _id: "page_views" trong site_stats), mỗi GET +1.
+ * Không dùng baseline — đếm từ 1, 2, 3… theo lượt truy cập thực tế.
  */
 async function incrementPageViews() {
   const collection = getSiteStatsCollection();
   if (!collection) return null;
 
   const now = new Date();
+  let doc = null;
 
   try {
-    await ensurePageViewsBaseline(collection);
-
-    await collection.updateOne(
+    const result = await collection.findOneAndUpdate(
       { _id: SITE_STATS_PAGE_VIEWS_ID },
       {
         $inc: { views: 1 },
         $set: { updatedAt: now },
-        $setOnInsert: {
-          createdAt: now,
-          views: PAGE_VIEWS_BASELINE - 1,
-          countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
-        },
+        $setOnInsert: { createdAt: now },
       },
-      { upsert: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
-    // Đọc lại sau update — ổn định hơn findOneAndUpdate trên Vercel Serverless
-    const doc = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
-    let views = Number(doc?.views);
-
-    if (!Number.isFinite(views) || views < PAGE_VIEWS_BASELINE) {
-      return PAGE_VIEWS_BASELINE;
+    if (result && typeof result === 'object' && 'value' in result) {
+      doc = result.value;
+    } else {
+      doc = result;
     }
-
-    return views;
   } catch (err) {
-    console.error('  ❌ incrementPageViews:', err.message);
+    console.error('  ❌ incrementPageViews findOneAndUpdate:', err.message);
     return null;
   }
+
+  let views = Number(doc?.views);
+  if (!Number.isFinite(views) || views < 0) {
+    try {
+      const fallback = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
+      views = Number(fallback?.views);
+    } catch (readErr) {
+      console.error('  ❌ incrementPageViews fallback read:', readErr.message);
+      return null;
+    }
+  }
+
+  return Number.isFinite(views) && views >= 0 ? views : null;
 }
 
 function buildPriceHistoryId(watchId, supermarket) {
@@ -561,7 +571,11 @@ app.get('/api/pageviews', async (_req, res) => {
   }
 
   try {
-    const db = await connectMongo();
+    const db = await withTimeout(
+      connectMongo(),
+      MONGO_CONNECT_TIMEOUT_MS,
+      'MongoDB connect (pageviews)'
+    );
     if (!db) {
       return res.status(503).json({
         error: 'Không kết nối được MongoDB.',
@@ -569,7 +583,11 @@ app.get('/api/pageviews', async (_req, res) => {
       });
     }
 
-    const totalViews = await incrementPageViews();
+    const totalViews = await withTimeout(
+      incrementPageViews(),
+      MONGO_CONNECT_TIMEOUT_MS,
+      'pageviews increment'
+    );
     if (totalViews == null) {
       return res.status(503).json({
         error: 'Không cập nhật được bộ đếm pageviews.',
@@ -3317,45 +3335,34 @@ function extractStoreIdFromPayload(payload) {
   return null;
 }
 
-/** Try optional RapidAPI store-locator paths on the same supermarket host. */
+/** RapidAPI store locator (một endpoint, timeout ngắn — fallback sau locator công khai). */
 async function tryRapidApiNearestStoreId(supermarket, location) {
   if (!RAPIDAPI_KEY) return null;
 
   const isColes = supermarket === 'Coles';
   const host = isColes ? COLES_HOST : WOOLWORTHS_HOST;
-  const paths = isColes
-    ? ['/coles/stores/nearby', '/coles/stores', '/coles/store-locator']
-    : [
-        '/woolworths/stores/nearby',
-        '/woolworths/stores',
-        '/woolworths/store-locator',
-      ];
+  const path = isColes ? '/coles/stores/nearby' : '/woolworths/stores/nearby';
 
-  for (const path of paths) {
-    try {
-      const response = await axios.get(`https://${host}${path}`, {
-        params: {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          lat: location.latitude,
-          lng: location.longitude,
-          range: 25,
-          max: 3,
-        },
-        headers: {
-          'x-rapidapi-key': RAPIDAPI_KEY,
-          'x-rapidapi-host': host,
-        },
-        timeout: 15000,
-      });
-      const storeId = extractStoreIdFromPayload(response.data);
-      if (storeId) return storeId;
-    } catch {
-      // Host may not expose a store endpoint; continue to public locators.
-    }
+  try {
+    const response = await axios.get(`https://${host}${path}`, {
+      params: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        lat: location.latitude,
+        lng: location.longitude,
+        range: 25,
+        max: 3,
+      },
+      headers: {
+        'x-rapidapi-key': RAPIDAPI_KEY,
+        'x-rapidapi-host': host,
+      },
+      timeout: STORE_LOCATOR_REQUEST_TIMEOUT_MS,
+    });
+    return extractStoreIdFromPayload(response.data);
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
 /** Resolve the nearest Coles store number via the public store-locator service. */
@@ -3368,7 +3375,7 @@ async function resolveColesStoreId(location) {
           latitude: location.latitude,
           longitude: location.longitude,
         },
-        timeout: 12000,
+        timeout: STORE_LOCATOR_REQUEST_TIMEOUT_MS,
         responseType: 'text',
       }
     );
@@ -3387,29 +3394,42 @@ async function resolveColesStoreId(location) {
 /** Resolve the nearest Woolworths store number via the public proximity service. */
 async function resolveWoolworthsStoreId(location) {
   const divisions = ['SUPERMARKETS', 'WOOLWORTHS', 'supermarkets'];
-
-  for (const division of divisions) {
-    try {
-      const url =
-        `https://www.woolworths.com.au/storelocator/service/proximity/${division}` +
-        `/latitude/${location.latitude}/longitude/${location.longitude}/range/25/max/3`;
-      const response = await axios.get(url, {
-        timeout: 12000,
+  const attempts = divisions.map((division) => {
+    const url =
+      `https://www.woolworths.com.au/storelocator/service/proximity/${division}` +
+      `/latitude/${location.latitude}/longitude/${location.longitude}/range/25/max/3`;
+    return axios
+      .get(url, {
+        timeout: STORE_LOCATOR_REQUEST_TIMEOUT_MS,
         headers: { Accept: 'application/json, text/plain, */*' },
-      });
-      const storeId = extractStoreIdFromPayload(response.data);
-      if (storeId) return storeId;
-    } catch {
-      // Try the next division slug if this one is not recognised.
-    }
+      })
+      .then((response) => extractStoreIdFromPayload(response.data));
+  });
+
+  const results = await Promise.allSettled(attempts);
+  for (const result of results) {
+    if (result.status === 'fulfilled' && result.value) return result.value;
   }
 
   return tryRapidApiNearestStoreId('Woolworths', location);
 }
 
+/** Tra cứu store ID (chưa cache) — gọi song song Coles + Woolworths. */
+async function resolveNearestStoreIdsUncached(location) {
+  const [colesStoreId, woolworthsStoreId] = await Promise.all([
+    resolveColesStoreId(location),
+    resolveWoolworthsStoreId(location),
+  ]);
+  return {
+    colesStoreId,
+    woolworthsStoreId,
+    expiresAt: Date.now() + NEAREST_STORE_CACHE_TTL_MS,
+  };
+}
+
 /**
  * Resolve (and cache) nearest Coles / Woolworths store IDs for the user's coordinates.
- * Used to scope RapidAPI catalog pricing to the local area.
+ * Timeout + dedupe inflight — tránh chậm gấp đôi khi search Coles và WW song song.
  */
 async function resolveNearestStoreIds(location) {
   const cacheKey = buildLocationSegment(location);
@@ -3418,25 +3438,38 @@ async function resolveNearestStoreIds(location) {
     return cached;
   }
 
-  const [colesStoreId, woolworthsStoreId] = await Promise.all([
-    resolveColesStoreId(location),
-    resolveWoolworthsStoreId(location),
-  ]);
-
-  const entry = {
-    colesStoreId,
-    woolworthsStoreId,
-    expiresAt: Date.now() + NEAREST_STORE_CACHE_TTL_MS,
-  };
-  nearestStoreIdCache.set(cacheKey, entry);
-
-  if (colesStoreId || woolworthsStoreId) {
-    console.log(
-      `  🏪 Nearest stores @ ${cacheKey}: Coles=${colesStoreId || 'n/a'} | WW=${woolworthsStoreId || 'n/a'}`
-    );
+  if (nearestStoreLookupInflight.has(cacheKey)) {
+    return nearestStoreLookupInflight.get(cacheKey);
   }
 
-  return entry;
+  const lookupPromise = withTimeout(
+    resolveNearestStoreIdsUncached(location),
+    STORE_LOOKUP_MAX_MS,
+    'nearest store lookup'
+  )
+    .catch((err) => {
+      console.warn('  ⚠ Nearest store lookup skipped:', err.message);
+      return {
+        colesStoreId: null,
+        woolworthsStoreId: null,
+        expiresAt: Date.now() + NEAREST_STORE_CACHE_TTL_MS,
+      };
+    })
+    .then((entry) => {
+      if (entry.colesStoreId || entry.woolworthsStoreId) {
+        console.log(
+          `  🏪 Nearest stores @ ${cacheKey}: Coles=${entry.colesStoreId || 'n/a'} | WW=${entry.woolworthsStoreId || 'n/a'}`
+        );
+      }
+      nearestStoreIdCache.set(cacheKey, entry);
+      return entry;
+    })
+    .finally(() => {
+      nearestStoreLookupInflight.delete(cacheKey);
+    });
+
+  nearestStoreLookupInflight.set(cacheKey, lookupPromise);
+  return lookupPromise;
 }
 
 /** Build RapidAPI query params including geo coordinates and optional storeId. */
@@ -3478,15 +3511,10 @@ async function fetchStoreRawList(supermarket, keyword) {
 
   const location = getRequestLocation();
 
-  try {
-    await connectMongo();
-    const cached = await readApiCache(supermarket, query, location);
-    if (cached != null) {
-      console.log(`  💾 ${supermarket} cache hit: "${query}" @ ${buildLocationSegment(location)}`);
-      return cached;
-    }
-  } catch (cacheErr) {
-    console.warn(`  ⚠ MongoDB cache read failed (${supermarket}):`, cacheErr.message);
+  const cached = await tryReadApiCache(supermarket, query, location);
+  if (cached != null) {
+    console.log(`  💾 ${supermarket} cache hit: "${query}" @ ${buildLocationSegment(location)}`);
+    return cached;
   }
 
   let storeIds = { colesStoreId: null, woolworthsStoreId: null };
@@ -3515,14 +3543,7 @@ async function fetchStoreRawList(supermarket, keyword) {
       });
 
       const rawList = extractResultsArray(response.data);
-
-      try {
-        await connectMongo();
-        await writeApiCache(supermarket, query, rawList, location);
-      } catch (cacheErr) {
-        console.warn(`  ⚠ MongoDB cache write failed (${supermarket}):`, cacheErr.message);
-      }
-
+      scheduleWriteApiCache(supermarket, query, rawList, location);
       return rawList;
     } catch (error) {
       lastError = error;

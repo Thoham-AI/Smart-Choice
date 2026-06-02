@@ -1753,20 +1753,15 @@ button:hover {
     color: var(--accent);
 }
 
-/* Pageviews — pageviews.js bật .is-visible sau khi gọi /api/pageviews */
+/* Ẩn mặc định — app.js bật .is-visible sau /api/pageviews */
 .pageviews-display {
-    display: block;
+    display: none;
     margin: 0 0 12px;
-    font-size: 1.125rem;
-    font-weight: 700;
-    line-height: 1.35;
-    color: var(--text-primary);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-muted);
     letter-spacing: 0.01em;
     text-align: center;
-}
-
-.pageviews-display.is-loading #pageviews-count {
-    opacity: 0.65;
 }
 
 .pageviews-display.is-visible {
@@ -1775,8 +1770,8 @@ button:hover {
 
 .pageviews-display #pageviews-count {
     font-variant-numeric: tabular-nums;
-    font-weight: 800;
-    color: var(--text-primary);
+    font-weight: 700;
+    color: var(--text-secondary);
 }
 
 .site-footer-legal {
@@ -2107,13 +2102,13 @@ button:hover {
 
 [data-theme="dark"] .site-footer-legal,
 [data-theme="dark"] .site-footer-meta,
-[data-theme="dark"] .ai-list-disclaimer {
+[data-theme="dark"] .ai-list-disclaimer,
+[data-theme="dark"] .pageviews-display {
     color: var(--text-muted);
 }
 
-[data-theme="dark"] .pageviews-display,
 [data-theme="dark"] .pageviews-display #pageviews-count {
-    color: var(--text-primary);
+    color: var(--text-secondary);
 }
 
 [data-theme="dark"] .feedback-fab {

@@ -255,8 +255,8 @@
                 |
                 <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
             </p>
-            <p id="pageviews-display" class="pageviews-display" aria-live="polite">
-                📊 Pageviews: <span id="pageviews-count">…</span>
+            <p id="pageviews-display" class="pageviews-display" hidden aria-live="polite">
+                📊 Pageviews: <span id="pageviews-count">—</span>
             </p>
             <p class="site-footer-legal">
                 SmartChoice is an independent platform built for consumer price comparison purposes.
@@ -283,9 +283,7 @@
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
     <script src="/script.js?v=40"></script>
     <script src="/barcode-scanner.js?v=4"></script>
-    <!-- Pageviews — separate file; runs even if app.js fails -->
-    <script src="/pageviews.js?v=4"></script>
-    <script src="/app.js?v=5"></script>
+    <script src="/app.js?v=6"></script>
 
     <!-- Vercel Analytics — production host only (avoids 404/MIME errors on localhost) -->
     <script>
