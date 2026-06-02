@@ -255,11 +255,15 @@ function roundMoney(amount) {
   return Number(n.toFixed(2));
 }
 
-const UNIT_PRICE_EPS = 0.009;
+/**
+ * Ngưỡng sai số ($) khi so sánh giá/kg hoặc giá gói — khớp logic API (api/index.js).
+ * Chênh ≤ ngưỡng → đồng giá, không hiện tag "Coles/Woolworths cheaper".
+ */
+const PRICE_EPSILON = 0.05;
 
 /**
- * Compare two products using $/kg when available (same logic as API similar-pairs).
- * @returns {{ saving: number, cheaperStore: 'Coles'|'Woolworths'|'tie'|null }}
+ * Chuẩn hóa giá/kg từ sản phẩm (field hoặc parse unit_price_text).
+ * @returns {number|null}
  */
 function extractUnitPricePerKg(product) {
   if (!product) return null;
@@ -285,22 +289,27 @@ function extractUnitPricePerKg(product) {
   return null;
 }
 
+/**
+ * So sánh hai sản phẩm tương đồng — ưu tiên $/kg, sau đó giá gói.
+ * @returns {{ saving: number, cheaperStore: 'Coles'|'Woolworths'|'tie'|null, compareBasis?: 'per_kg'|'pack_price' }}
+ */
 function compareProductsForCheaper(woolProduct, colesProduct) {
   const woolKg = extractUnitPricePerKg(woolProduct);
   const colesKg = extractUnitPricePerKg(colesProduct);
 
   if (woolKg != null && colesKg != null) {
-    const diffKg = Math.abs(woolKg - colesKg);
-    if (diffKg < UNIT_PRICE_EPS) {
-      return { saving: 0, cheaperStore: 'tie' };
+    const priceDiff = Math.abs(colesKg - woolKg);
+    if (priceDiff <= PRICE_EPSILON) {
+      return { saving: 0, cheaperStore: 'tie', compareBasis: 'per_kg' };
     }
     const cheaperStore = woolKg < colesKg ? 'Woolworths' : 'Coles';
     const woolW = woolProduct?.packWeightKg > 0 ? woolProduct.packWeightKg : 1;
     const colesW = colesProduct?.packWeightKg > 0 ? colesProduct.packWeightKg : 1;
     const refKg = Math.min(woolW, colesW);
     return {
-      saving: roundMoney(diffKg * refKg),
+      saving: roundMoney(priceDiff * refKg),
       cheaperStore,
+      compareBasis: 'per_kg',
     };
   }
 
@@ -309,10 +318,13 @@ function compareProductsForCheaper(woolProduct, colesProduct) {
   if (!Number.isFinite(coles) || !Number.isFinite(wool) || coles <= 0 || wool <= 0) {
     return { saving: 0, cheaperStore: null };
   }
-  const saving = roundMoney(Math.abs(coles - wool));
-  if (saving <= 0) return { saving: 0, cheaperStore: 'tie' };
+  const packDiff = Math.abs(coles - wool);
+  if (packDiff <= PRICE_EPSILON) {
+    return { saving: 0, cheaperStore: 'tie', compareBasis: 'pack_price' };
+  }
+  const saving = roundMoney(packDiff);
   const cheaperStore = wool < coles ? 'Woolworths' : 'Coles';
-  return { saving, cheaperStore };
+  return { saving, cheaperStore, compareBasis: 'pack_price' };
 }
 
 /**
@@ -1136,14 +1148,33 @@ function renderSummary(el, section, woolworths, coles, data = {}) {
 }
 
 /**
- * Similar product pair footer text (respects per-kg tie from API).
+ * Lấy kết quả so sánh giá cho một cặp tương đồng (luôn tính lại trên client, khớp PRICE_EPSILON).
  */
-function formatPairSaveText(pair) {
-  if (!pair) return '';
-  if (pair.cheaper === 'tie' || pair.saving <= 0) {
-    return pair.compareBasis === 'per_kg' ? 'Same price per kg' : 'Same price';
+function getPairComparison(pair) {
+  const { cheaperStore, saving, compareBasis } = compareProductsForCheaper(
+    pair.woolworths,
+    pair.coles
+  );
+  const cheaper =
+    cheaperStore === 'tie' || cheaperStore == null ? 'tie' : cheaperStore;
+  return {
+    cheaper,
+    saving: Number(saving) || 0,
+    compareBasis: compareBasis || pair.compareBasis || 'per_kg',
+  };
+}
+
+/**
+ * Dòng chú thích dưới thẻ cặp sản phẩm tương đồng.
+ */
+function formatPairSaveText(comparison) {
+  if (!comparison) return '';
+  if (comparison.cheaper === 'tie' || comparison.saving <= 0) {
+    return comparison.compareBasis === 'per_kg'
+      ? 'Same price per kg'
+      : 'Same price';
   }
-  return `Difference: $${Number(pair.saving).toFixed(2)}`;
+  return `Difference: $${Number(comparison.saving).toFixed(2)}`;
 }
 
 /**
@@ -1161,12 +1192,13 @@ function renderMatchedPairs(container, section, pairs) {
     row.className = 'match-row reveal-animate';
     row.style.animationDelay = `${index * 0.05}s`;
 
+    const comparison = getPairComparison(pair);
     const badge =
-      pair.cheaper === 'Woolworths'
+      comparison.cheaper === 'Woolworths'
         ? '<span class="badge woolies-win">Woolworths cheaper</span>'
-        : pair.cheaper === 'Coles'
+        : comparison.cheaper === 'Coles'
           ? '<span class="badge coles-win">Coles cheaper</span>'
-          : `<span class="badge tie">${pair.compareBasis === 'per_kg' ? 'Same price per kg' : 'Same price'}</span>`;
+          : `<span class="badge tie">${comparison.compareBasis === 'per_kg' ? 'Same price per kg' : 'Same price'}</span>`;
 
     row.innerHTML = `
       <div class="match-side" data-store="woolworths">
@@ -1184,7 +1216,7 @@ function renderMatchedPairs(container, section, pairs) {
         ${buildPriceBlockWithSaving(pair.coles, pair.coles, pair.woolworths)}
         <button type="button" class="select-btn match-add-btn">Add to list</button>
       </div>
-      <div class="match-meta">${badge}<p class="save-text">${formatPairSaveText(pair)}</p></div>
+      <div class="match-meta">${badge}<p class="save-text">${formatPairSaveText(comparison)}</p></div>
     `;
 
     const addButtons = row.querySelectorAll('.match-add-btn');

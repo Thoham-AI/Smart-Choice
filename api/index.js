@@ -952,10 +952,14 @@ function findProductByBarcodeInRawList(rawList, barcode, supermarket) {
   return null;
 }
 
-const UNIT_PRICE_EPS = 0.009;
+/**
+ * Ngưỡng sai số ($) khi so sánh giá/kg hoặc giá gói giữa Coles và Woolworths.
+ * Chênh ≤ ngưỡng này → coi là đồng giá (tránh tag "cheaper" do làm tròn, vd $21.60 vs $21.62/kg).
+ */
+const PRICE_EPSILON = 0.05;
 
 /**
- * Normalised price per kg for comparing packs of different sizes (e.g. 600g vs 500g).
+ * Chuẩn hóa giá trên kg từ sản phẩm (field API hoặc suy ra từ giá gói + khối lượng).
  */
 function extractUnitPricePerKg(product) {
   if (!product) return null;
@@ -982,15 +986,16 @@ function extractUnitPricePerKg(product) {
 }
 
 /**
- * Pick cheaper store: compare $/kg first, then fall back to pack shelf price.
+ * Chọn siêu thị rẻ hơn: ưu tiên so giá/kg; không có thì so giá gói trên kệ.
+ * Chênh lệch ≤ PRICE_EPSILON → đồng giá (cheaper: 'tie'), không gắn tag "… cheaper".
  */
 function compareProductsForCheaper(woolworthsItem, colesItem) {
   const woolKg = extractUnitPricePerKg(woolworthsItem);
   const colesKg = extractUnitPricePerKg(colesItem);
 
   if (woolKg != null && colesKg != null) {
-    const diffKg = Math.abs(woolKg - colesKg);
-    if (diffKg < UNIT_PRICE_EPS) {
+    const priceDiff = Math.abs(colesKg - woolKg);
+    if (priceDiff <= PRICE_EPSILON) {
       return { cheaper: 'tie', saving: 0, compareBasis: 'per_kg' };
     }
     const cheaper = woolKg < colesKg ? 'Woolworths' : 'Coles';
@@ -999,14 +1004,18 @@ function compareProductsForCheaper(woolworthsItem, colesItem) {
     const refKg = Math.min(woolW, colesW);
     return {
       cheaper,
-      saving: Number((diffKg * refKg).toFixed(2)),
+      saving: Number((priceDiff * refKg).toFixed(2)),
       compareBasis: 'per_kg',
     };
   }
 
-  const woolPrice = woolworthsItem.packShelfPrice ?? woolworthsItem.price ?? 0;
-  const colesPrice = colesItem.packShelfPrice ?? colesItem.price ?? 0;
-  const saving = Math.abs(woolPrice - colesPrice);
+  const woolPrice = Number(woolworthsItem.packShelfPrice ?? woolworthsItem.price ?? 0);
+  const colesPrice = Number(colesItem.packShelfPrice ?? colesItem.price ?? 0);
+  const packDiff = Math.abs(colesPrice - woolPrice);
+  if (packDiff <= PRICE_EPSILON) {
+    return { cheaper: 'tie', saving: 0, compareBasis: 'pack_price' };
+  }
+
   const cheaper =
     woolPrice < colesPrice
       ? 'Woolworths'
@@ -1016,7 +1025,7 @@ function compareProductsForCheaper(woolworthsItem, colesItem) {
 
   return {
     cheaper,
-    saving: Number(saving.toFixed(2)),
+    saving: Number(packDiff.toFixed(2)),
     compareBasis: 'pack_price',
   };
 }
