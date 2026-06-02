@@ -233,29 +233,47 @@ async function ensurePageViewsBaseline(collection) {
   const seedViews = PAGE_VIEWS_BASELINE - 1;
 
   const existing = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
-  const needsReset =
-    !existing ||
-    existing.countingBaseline !== PAGE_VIEWS_BASELINE_VERSION ||
-    Number(existing.views) < seedViews;
 
-  if (!needsReset) return;
-
-  await collection.updateOne(
-    { _id: SITE_STATS_PAGE_VIEWS_ID },
-    {
-      $set: {
-        views: seedViews,
-        countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
-        updatedAt: now,
+  if (!existing) {
+    await collection.updateOne(
+      { _id: SITE_STATS_PAGE_VIEWS_ID },
+      {
+        $set: {
+          views: seedViews,
+          countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
+          updatedAt: now,
+        },
+        $setOnInsert: { createdAt: now },
       },
-      $setOnInsert: { createdAt: now },
-    },
-    { upsert: true }
-  );
+      { upsert: true }
+    );
+    console.log(
+      `  📊 Pageviews: tạo mới, bắt đầu từ ${PAGE_VIEWS_BASELINE} (lưu ${seedViews})`
+    );
+    return;
+  }
 
-  console.log(
-    `  📊 Pageviews baseline → bắt đầu đếm từ ${PAGE_VIEWS_BASELINE} (lưu ${seedViews}, +1 mỗi lượt xem)`
-  );
+  const views = Number(existing.views);
+  const patch = { updatedAt: now };
+
+  if (existing.countingBaseline !== PAGE_VIEWS_BASELINE_VERSION) {
+    patch.countingBaseline = PAGE_VIEWS_BASELINE_VERSION;
+  }
+
+  // Chỉ hạ về (baseline - 1) khi số đang thấp hơn mốc — không reset mỗi lượt xem về 125
+  if (!Number.isFinite(views) || views < seedViews) {
+    patch.views = seedViews;
+    console.log(
+      `  📊 Pageviews: nâng mốc lên ${PAGE_VIEWS_BASELINE} (đang lưu ${seedViews})`
+    );
+  }
+
+  if (Object.keys(patch).length > 1) {
+    await collection.updateOne(
+      { _id: SITE_STATS_PAGE_VIEWS_ID },
+      { $set: patch }
+    );
+  }
 }
 
 /**
@@ -267,12 +285,11 @@ async function incrementPageViews() {
   if (!collection) return null;
 
   const now = new Date();
-  let doc = null;
 
   try {
     await ensurePageViewsBaseline(collection);
 
-    const result = await collection.findOneAndUpdate(
+    await collection.updateOne(
       { _id: SITE_STATS_PAGE_VIEWS_ID },
       {
         $inc: { views: 1 },
@@ -283,36 +300,22 @@ async function incrementPageViews() {
           countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
         },
       },
-      { upsert: true, returnDocument: 'after' }
+      { upsert: true }
     );
 
-    // Driver 6.x: thường trả document; một số phiên bản bọc trong { value }
-    if (result && typeof result === 'object' && 'value' in result) {
-      doc = result.value;
-    } else {
-      doc = result;
+    // Đọc lại sau update — ổn định hơn findOneAndUpdate trên Vercel Serverless
+    const doc = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
+    let views = Number(doc?.views);
+
+    if (!Number.isFinite(views) || views < PAGE_VIEWS_BASELINE) {
+      return PAGE_VIEWS_BASELINE;
     }
+
+    return views;
   } catch (err) {
-    console.error('  ❌ incrementPageViews findOneAndUpdate:', err.message);
+    console.error('  ❌ incrementPageViews:', err.message);
     return null;
   }
-
-  let views = Number(doc?.views);
-  if (!Number.isFinite(views) || views < 0) {
-    try {
-      const fallback = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
-      views = Number(fallback?.views);
-    } catch (readErr) {
-      console.error('  ❌ incrementPageViews fallback read:', readErr.message);
-      return null;
-    }
-  }
-
-  if (!Number.isFinite(views) || views < PAGE_VIEWS_BASELINE) {
-    return PAGE_VIEWS_BASELINE;
-  }
-
-  return views;
 }
 
 function buildPriceHistoryId(watchId, supermarket) {
@@ -528,6 +531,59 @@ app.get('/', (_req, res) => {
   } catch (error) {
     console.error('  ❌ Không tải được trang chủ:', error.message);
     res.status(500).send('Cannot load home page.');
+  }
+});
+
+/** html5-qrcode: repo root hoặc public/ (Vercel static chỉ phục vụ public/). */
+const HTML5_QR_PUBLIC = path.join(PUBLIC_DIR, 'html5-qrcode.min.js');
+const HTML5_QR_ROOT = path.join(__dirname, '../html5-qrcode.min.js');
+
+app.get('/html5-qrcode.min.js', (_req, res, next) => {
+  const file = fs.existsSync(HTML5_QR_PUBLIC)
+    ? HTML5_QR_PUBLIC
+    : fs.existsSync(HTML5_QR_ROOT)
+      ? HTML5_QR_ROOT
+      : null;
+  if (!file) return next();
+  res.type('application/javascript');
+  return res.sendFile(file);
+});
+
+/**
+ * Pageviews — đăng ký TRƯỚC express.static để /api/pageviews không bị static chặn.
+ */
+app.get('/api/pageviews', async (_req, res) => {
+  if (!MONGODB_URI) {
+    return res.status(503).json({
+      error: 'Chưa cấu hình MONGODB_URI — bộ đếm pageviews tạm tắt.',
+      total_views: null,
+    });
+  }
+
+  try {
+    const db = await connectMongo();
+    if (!db) {
+      return res.status(503).json({
+        error: 'Không kết nối được MongoDB.',
+        total_views: null,
+      });
+    }
+
+    const totalViews = await incrementPageViews();
+    if (totalViews == null) {
+      return res.status(503).json({
+        error: 'Không cập nhật được bộ đếm pageviews.',
+        total_views: null,
+      });
+    }
+
+    return res.json({ total_views: totalViews });
+  } catch (error) {
+    console.error('  ❌ Pageviews error:', error.message);
+    return res.status(503).json({
+      error: error.message || 'Không đọc/ghi được pageviews.',
+      total_views: null,
+    });
   }
 });
 
@@ -3925,49 +3981,6 @@ app.get('/api/watchlist/price-history', async (req, res) => {
     console.error('  ❌ Price history error:', error.message);
     return res.status(500).json({
       error: error.message || 'Could not load price history.',
-    });
-  }
-});
-
-// ============================================================
-// 7e. BỘ ĐẾM PAGEVIEWS CÔNG KHAI: GET /api/pageviews
-// ============================================================
-
-/**
- * Mỗi lần gọi (thường 1 lần / lượt tải trang): tăng views +1 trong site_stats, trả tổng hiện tại.
- * Không cấu hình MongoDB hoặc lỗi kết nối → 503 (không làm sập trang chủ).
- */
-app.get('/api/pageviews', async (_req, res) => {
-  if (!MONGODB_URI) {
-    return res.status(503).json({
-      error: 'Chưa cấu hình MONGODB_URI — bộ đếm pageviews tạm tắt.',
-      total_views: null,
-    });
-  }
-
-  try {
-    const db = await connectMongo();
-    if (!db) {
-      return res.status(503).json({
-        error: 'Không kết nối được MongoDB.',
-        total_views: null,
-      });
-    }
-
-    const totalViews = await incrementPageViews();
-    if (totalViews == null) {
-      return res.status(503).json({
-        error: 'Không cập nhật được bộ đếm pageviews.',
-        total_views: null,
-      });
-    }
-
-    return res.json({ total_views: totalViews });
-  } catch (error) {
-    console.error('  ❌ Pageviews error:', error.message);
-    return res.status(503).json({
-      error: error.message || 'Không đọc/ghi được pageviews.',
-      total_views: null,
     });
   }
 });

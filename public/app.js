@@ -1,6 +1,6 @@
 /**
- * SmartChoice – Biểu đồ watchlist, xuất PDF, bộ đếm Pageviews.
- * Nút Feedback: href cố định trong HTML do Backend phục vụ (api/index.js) — không xử lý ở đây.
+ * SmartChoice – Biểu đồ watchlist, xuất PDF.
+ * Pageviews: public/pageviews.js | Feedback: href trong HTML (api/index.js).
  */
 
 (function initSmartChoiceApp() {
@@ -566,98 +566,4 @@
     exportCartToPdf,
     exportAiListToPdf,
   };
-
-  // ============================================================
-  // Pageviews (khởi tạo cuối file — không chặn AI loading)
-  // ============================================================
-
-  /**
-   * Định dạng số pageviews có dấu phẩy (en-AU).
-   */
-  function formatPageViewCount(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0) return '—';
-    return n.toLocaleString('en-AU');
-  }
-
-  /**
-   * Hiện dòng pageviews dưới footer sau khi API trả về thành công.
-   */
-  function showPageViewsFooter(totalViews) {
-    const display = document.getElementById('pageviews-display');
-    const countEl = document.getElementById('pageviews-count');
-    if (!display || !countEl) return;
-
-    countEl.textContent = formatPageViewCount(totalViews);
-    display.removeAttribute('hidden');
-    display.classList.add('is-visible');
-    display.style.display = 'block';
-  }
-
-  /**
-   * Gọi GET /api/pageviews (tăng +1 trên server), hiển thị kết quả nếu OK.
-   */
-  async function fetchAndShowPageViews() {
-    const apiRoot =
-      typeof API_BASE !== 'undefined' && API_BASE
-        ? API_BASE
-        : window.location?.origin || '';
-
-    if (!apiRoot) return;
-
-    try {
-      const response = await fetch(`${apiRoot}/api/pageviews`, {
-        method: 'GET',
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
-
-      let data = {};
-      try {
-        data = await response.json();
-      } catch {
-        data = {};
-      }
-
-      if (response.ok && data.total_views != null) {
-        showPageViewsFooter(data.total_views);
-      }
-    } catch (err) {
-      console.warn('[SmartChoice] Pageviews:', err.message || err);
-    }
-  }
-
-  /**
-   * Lên lịch gọi pageviews sau window.load — requestIdleCallback để không tranh CPU với AI.
-   */
-  function schedulePageViewCounter() {
-    const run = () => {
-      fetchAndShowPageViews();
-    };
-
-    if (typeof window.requestIdleCallback === 'function') {
-      window.requestIdleCallback(run, { timeout: 4000 });
-    } else {
-      window.setTimeout(run, 300);
-    }
-  }
-
-  /**
-   * Khởi động bộ đếm pageviews sau khi trang load xong.
-   */
-  function bootPageViewCounter() {
-    const startPageViews = () => {
-      if (window.__smartchoicePageViewsScheduled) return;
-      window.__smartchoicePageViewsScheduled = true;
-      schedulePageViewCounter();
-    };
-
-    if (document.readyState === 'complete') {
-      startPageViews();
-    } else {
-      window.addEventListener('load', startPageViews, { once: true });
-    }
-  }
-
-  bootPageViewCounter();
 })();

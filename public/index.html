@@ -255,8 +255,8 @@
                 |
                 <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
             </p>
-            <p id="pageviews-display" class="pageviews-display" hidden>
-                📊 Pageviews: <span id="pageviews-count">—</span>
+            <p id="pageviews-display" class="pageviews-display" aria-live="polite">
+                📊 Pageviews: <span id="pageviews-count">…</span>
             </p>
             <p class="site-footer-legal">
                 SmartChoice is an independent platform built for consumer price comparison purposes.
@@ -281,16 +281,24 @@
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="script.js?v=38"></script>
-    <script src="barcode-scanner.js?v=4"></script>
-    <!-- app.js: Pageviews + watchlist/PDF (không ghi đè link Feedback) -->
-    <script src="app.js?v=4"></script>
+    <script src="/script.js?v=39"></script>
+    <script src="/barcode-scanner.js?v=4"></script>
+    <!-- Pageviews — separate file; runs even if app.js fails -->
+    <script src="/pageviews.js?v=4"></script>
+    <script src="/app.js?v=5"></script>
 
-    <!--
-      Vercel Web Analytics + Speed Insights (chỉ hoạt động khi deploy trên Vercel).
-      Đặt cuối body, defer: tải song song, chạy sau khi DOM sẵn sàng — không chặn UI / thanh % AI Analyzer.
-    -->
-    <script defer src="/_vercel/insights/script.js"></script>
-    <script defer src="/_vercel/speed-insights/script.js"></script>
+    <!-- Vercel Analytics — production host only (avoids 404/MIME errors on localhost) -->
+    <script>
+      (function () {
+        var h = location.hostname;
+        if (h === 'localhost' || h === '127.0.0.1') return;
+        ['/_vercel/insights/script.js', '/_vercel/speed-insights/script.js'].forEach(function (src) {
+          var el = document.createElement('script');
+          el.defer = true;
+          el.src = src;
+          document.body.appendChild(el);
+        });
+      })();
+    </script>
 </body>
 </html>
