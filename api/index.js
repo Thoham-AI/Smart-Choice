@@ -139,6 +139,13 @@ const PRICE_HISTORY_MAX_POINTS = 90;
 const SITE_STATS_COLLECTION = 'site_stats';
 /** Single document id for global page view counter. */
 const SITE_STATS_PAGE_VIEWS_ID = 'page_views';
+/** Mốc khởi đầu hiển thị pageviews — đếm tăng dần từ số này (có thể ghi đè bằng PAGE_VIEWS_BASELINE trong .env). */
+const PAGE_VIEWS_BASELINE =
+  Number(process.env.PAGE_VIEWS_BASELINE) > 0
+    ? Math.floor(Number(process.env.PAGE_VIEWS_BASELINE))
+    : 125;
+/** Trường đánh dấu đã áp dụng mốc baseline (đổi baseline thì tăng version). */
+const PAGE_VIEWS_BASELINE_VERSION = PAGE_VIEWS_BASELINE;
 const API_CACHE_TTL_MS =
   Number(process.env.API_CACHE_TTL_MINUTES) > 0
     ? Number(process.env.API_CACHE_TTL_MINUTES) * 60 * 1000
@@ -218,6 +225,40 @@ function getSiteStatsCollection() {
 }
 
 /**
+ * Đặt bộ đếm về (baseline - 1) để lượt tăng tiếp theo trả về đúng baseline (ví dụ 125).
+ * Chạy khi chưa có bản ghi hoặc đổi mốc baseline / số đang thấp hơn mốc.
+ */
+async function ensurePageViewsBaseline(collection) {
+  const now = new Date();
+  const seedViews = PAGE_VIEWS_BASELINE - 1;
+
+  const existing = await collection.findOne({ _id: SITE_STATS_PAGE_VIEWS_ID });
+  const needsReset =
+    !existing ||
+    existing.countingBaseline !== PAGE_VIEWS_BASELINE_VERSION ||
+    Number(existing.views) < seedViews;
+
+  if (!needsReset) return;
+
+  await collection.updateOne(
+    { _id: SITE_STATS_PAGE_VIEWS_ID },
+    {
+      $set: {
+        views: seedViews,
+        countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
+        updatedAt: now,
+      },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true }
+  );
+
+  console.log(
+    `  📊 Pageviews baseline → bắt đầu đếm từ ${PAGE_VIEWS_BASELINE} (lưu ${seedViews}, +1 mỗi lượt xem)`
+  );
+}
+
+/**
  * Tăng bộ đếm lượt xem công khai (document _id: "page_views" trong collection site_stats).
  * Tương thích MongoDB driver trên Vercel Serverless (document trả về trực tiếp hoặc .value).
  */
@@ -229,12 +270,18 @@ async function incrementPageViews() {
   let doc = null;
 
   try {
+    await ensurePageViewsBaseline(collection);
+
     const result = await collection.findOneAndUpdate(
       { _id: SITE_STATS_PAGE_VIEWS_ID },
       {
         $inc: { views: 1 },
         $set: { updatedAt: now },
-        $setOnInsert: { createdAt: now },
+        $setOnInsert: {
+          createdAt: now,
+          views: PAGE_VIEWS_BASELINE - 1,
+          countingBaseline: PAGE_VIEWS_BASELINE_VERSION,
+        },
       },
       { upsert: true, returnDocument: 'after' }
     );
@@ -261,7 +308,11 @@ async function incrementPageViews() {
     }
   }
 
-  return Number.isFinite(views) && views >= 0 ? views : null;
+  if (!Number.isFinite(views) || views < PAGE_VIEWS_BASELINE) {
+    return PAGE_VIEWS_BASELINE;
+  }
+
+  return views;
 }
 
 function buildPriceHistoryId(watchId, supermarket) {
