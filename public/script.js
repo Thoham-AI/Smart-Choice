@@ -414,7 +414,8 @@ function buildPriceBlockWithSaving(item, colesProduct, woolProduct) {
 // --- Official store search URLs (image + product name links) ---
 
 const COLES_SEARCH_BASE = 'https://www.coles.com.au/search?q=';
-const WOOLWORTHS_SEARCH_BASE = 'https://www.woolworths.com.au/shop/search?searchTerm=';
+/** URL tìm kiếm công khai chuẩn Woolworths AU — phải có /products (không dùng /shop/search?). */
+const WOOLWORTHS_SEARCH_BASE = 'https://www.woolworths.com.au/shop/search/products?searchTerm=';
 const ALDI_SEARCH_BASE = 'https://www.aldi.com.au/results?q=';
 
 /**
@@ -440,15 +441,19 @@ function buildAldiSearchUrl(query) {
   return `${ALDI_SEARCH_BASE}${encodeURIComponent(query)}`;
 }
 
-/** Resolve href for image/name links: official search URL, or product page as fallback. */
+/** Resolve href for image/name links: ưu tiên url sản phẩm từ API, fallback search chính thức. */
 function resolveStoreSearchUrl(item, fallbackKeyword = '') {
+  const direct = String(item?.url || '').trim();
+  if (/^https?:\/\//i.test(direct)) {
+    return direct;
+  }
+
   const store = item?.supermarket;
   const query = getStoreSearchQuery(item, fallbackKeyword);
   if (query && store === 'Coles') return buildColesSearchUrl(query);
   if (query && store === 'Woolworths') return buildWoolworthsSearchUrl(query);
   if (query && store === 'ALDI') return buildAldiSearchUrl(query);
-  const direct = String(item?.url || '').trim();
-  return /^https?:\/\//i.test(direct) ? direct : '';
+  return '';
 }
 
 /**

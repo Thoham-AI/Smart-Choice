@@ -1095,19 +1095,21 @@ function formatStoreError(storeName, error) {
 }
 
 const WOOLWORTHS_SITE_ORIGIN = 'https://www.woolworths.com.au';
+/** URL tìm kiếm công khai chuẩn Woolworths AU (có /products — KHÔNG dùng /shop/search?searchTerm=). */
+const WOOLWORTHS_SEARCH_PRODUCTS_PATH = '/shop/search/products';
 
 /**
- * Link PDP Woolworths — chỉ StockCode, không slug (tránh 404).
+ * Ưu tiên 1 — Link PDP Woolworths chỉ cần StockCode (không slug):
  * https://www.woolworths.com.au/shop/productdetails/{StockCode}
  */
 function buildWoolworthsProductUrl(raw) {
   const stockcode =
     raw.StockCode ??
     raw.stockCode ??
-    raw.StoreProductNo ??
-    raw.storeProductNo ??
     raw.stockcode ??
     raw.Stockcode ??
+    raw.StoreProductNo ??
+    raw.storeProductNo ??
     raw.product_id ??
     raw.productId;
   if (stockcode == null || stockcode === '') return '';
@@ -1118,7 +1120,52 @@ function buildWoolworthsProductUrl(raw) {
   return `${WOOLWORTHS_SITE_ORIGIN}/shop/productdetails/${code}`;
 }
 
-/** Rút stockcode từ URL/path Woolworths → URL chuẩn không slug. */
+/**
+ * Ưu tiên 2 — Tìm kiếm công khai (barcode / fallback khi không có StockCode):
+ * https://www.woolworths.com.au/shop/search/products?searchTerm={term}
+ */
+function buildWoolworthsSearchUrl(searchTerm) {
+  const term = String(searchTerm || '').trim();
+  if (!term) return '';
+  return `${WOOLWORTHS_SITE_ORIGIN}${WOOLWORTHS_SEARCH_PRODUCTS_PATH}?searchTerm=${encodeURIComponent(term)}`;
+}
+
+/** Trích searchTerm từ URL Woolworths (cả dạng sai /shop/search? và chuẩn /search/products?). */
+function extractWoolworthsSearchTermFromUrl(url) {
+  const match = String(url || '').match(/[?&]searchTerm=([^&#]+)/i);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1].replace(/\+/g, ' ')).trim();
+  } catch {
+    return String(match[1]).trim();
+  }
+}
+
+/**
+ * Sửa URL tìm kiếm lỗi từ API/cache: /shop/search?searchTerm= → /shop/search/products?searchTerm=
+ */
+function fixLegacyWoolworthsSearchUrl(urlOrPath) {
+  const trimmed = String(urlOrPath || '').trim();
+  if (!trimmed) return '';
+
+  const term = extractWoolworthsSearchTermFromUrl(trimmed);
+  if (!term) return '';
+
+  const isSearchUrl = /\/shop\/search/i.test(trimmed);
+  const isCorrectProductsPath = /\/shop\/search\/products/i.test(trimmed);
+
+  if (isSearchUrl) {
+    return buildWoolworthsSearchUrl(term);
+  }
+
+  if (isCorrectProductsPath) {
+    return buildWoolworthsSearchUrl(term);
+  }
+
+  return '';
+}
+
+/** Rút stockcode từ URL/path Woolworths → URL PDP chuẩn không slug. */
 function normalizeWoolworthsUrlToStockcodeOnly(urlOrPath, raw = {}) {
   const trimmed = String(urlOrPath || '').trim();
   const stockFromPath = trimmed.match(/\/productdetails\/(\d+)/i);
@@ -1129,48 +1176,78 @@ function normalizeWoolworthsUrlToStockcodeOnly(urlOrPath, raw = {}) {
 }
 
 /**
- * Ghép domain đầy đủ khi Woolworths trả path tương đối, rồi chuẩn hóa về URL chỉ stockcode.
+ * Ghép domain đầy đủ khi Woolworths trả path tương đối, rồi chuẩn hóa về PDP hoặc search/products.
  */
 function toAbsoluteWoolworthsProductUrl(urlOrPath, raw = {}) {
   const trimmed = String(urlOrPath || '').trim();
   if (!trimmed) return buildWoolworthsProductUrl(raw);
 
-  if (/^https?:\/\//i.test(trimmed)) {
-    return normalizeWoolworthsUrlToStockcodeOnly(trimmed, raw);
+  let absolute = trimmed;
+  if (!/^https?:\/\//i.test(trimmed) && trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    absolute = `${WOOLWORTHS_SITE_ORIGIN}${trimmed.replace(/\/+$/, '')}`;
   }
 
-  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
-    const path = /\/productdetails\/\d+/i.test(trimmed)
-      ? trimmed.startsWith('/shop/')
-        ? trimmed
-        : `/shop${trimmed.replace(/^\/+/, '')}`
-      : trimmed;
-    return normalizeWoolworthsUrlToStockcodeOnly(
-      `${WOOLWORTHS_SITE_ORIGIN}${path.replace(/\/+$/, '')}`,
-      raw
-    );
+  if (/\/productdetails\/\d+/i.test(absolute)) {
+    return normalizeWoolworthsUrlToStockcodeOnly(absolute, raw);
   }
 
-  return normalizeWoolworthsUrlToStockcodeOnly(trimmed, raw);
+  const fixedSearch = fixLegacyWoolworthsSearchUrl(absolute);
+  if (fixedSearch) return fixedSearch;
+
+  return buildWoolworthsProductUrl(raw);
 }
 
-/** Ghi đè URL Woolworths trong cache — luôn dạng /productdetails/{stockcode} (không slug). */
+/**
+ * Hàm trung tâm gán url Woolworths — dùng cho keyword search, barcode lookup, cache refresh.
+ * 1) Có StockCode/stockcode → /shop/productdetails/{code}
+ * 2) Không có → /shop/search/products?searchTerm={barcode|searchTerm}
+ */
+function resolveWoolworthsProductUrl(raw, options = {}) {
+  if (!raw || typeof raw !== 'object') return '';
+
+  const pdpUrl = buildWoolworthsProductUrl(raw);
+  if (pdpUrl) return pdpUrl;
+
+  const direct =
+    raw.source_url ||
+    raw.url ||
+    raw.product_url ||
+    raw.productUrl ||
+    raw.link ||
+    raw.product_link ||
+    raw.canonical_url ||
+    raw.href;
+
+  if (direct) {
+    const trimmed = String(direct).trim();
+    if (/\/productdetails\/\d+/i.test(trimmed)) {
+      return toAbsoluteWoolworthsProductUrl(trimmed, raw);
+    }
+    const fixedSearch = fixLegacyWoolworthsSearchUrl(trimmed);
+    if (fixedSearch) return fixedSearch;
+  }
+
+  const barcodeFallback =
+    options.scannedBarcode ||
+    options.searchTerm ||
+    [...collectBarcodesFromRaw(raw)][0] ||
+    '';
+
+  if (barcodeFallback) {
+    return buildWoolworthsSearchUrl(barcodeFallback);
+  }
+
+  return '';
+}
+
+/** Ghi đè URL Woolworths trong cache — PDP (StockCode) hoặc search/products chuẩn. */
 function refreshWoolworthsUrlsInRawList(rawList) {
   if (!Array.isArray(rawList)) return rawList;
   return rawList.map((raw) => {
     if (!raw || typeof raw !== 'object') return raw;
 
-    const legacy = String(raw.url || raw.product_url || '').trim();
-    const fixed =
-      buildWoolworthsProductUrl(raw) ||
-      (legacy ? normalizeWoolworthsUrlToStockcodeOnly(legacy, raw) : '');
-
+    const fixed = resolveWoolworthsProductUrl(raw);
     if (!fixed) return raw;
-
-    const legacyStockOnly = legacy
-      ? normalizeWoolworthsUrlToStockcodeOnly(legacy, raw)
-      : '';
-    if (legacyStockOnly === fixed) return { ...raw, url: fixed, product_url: fixed };
 
     return { ...raw, url: fixed, product_url: fixed };
   });
@@ -1195,7 +1272,7 @@ function extractProductUrl(raw, supermarket) {
     const trimmed = String(direct).trim();
 
     if (supermarket === 'Woolworths') {
-      return toAbsoluteWoolworthsProductUrl(trimmed, raw);
+      return resolveWoolworthsProductUrl(raw);
     }
 
     if (/^https?:\/\//i.test(trimmed)) {
@@ -1209,7 +1286,7 @@ function extractProductUrl(raw, supermarket) {
   }
 
   if (supermarket === 'Woolworths') {
-    return buildWoolworthsProductUrl(raw);
+    return resolveWoolworthsProductUrl(raw);
   }
 
   if (supermarket === 'ALDI' && raw.slug && raw.sku) {
@@ -1349,7 +1426,7 @@ function findProductByBarcodeInRawList(rawList, barcode, supermarket) {
     const codes = collectBarcodesFromRaw(raw);
     for (const code of codes) {
       if (barcodesMatch(code, target)) {
-        return normalizeItem(raw, supermarket);
+        return normalizeItem(raw, supermarket, { scannedBarcode: target });
       }
     }
   }
@@ -1964,7 +2041,7 @@ function isSuspiciousUnitPricePerKg(pricePerKg, name = '', categoryBucket = '') 
   return true;
 }
 
-function normalizeItem(raw, supermarket) {
+function normalizeItem(raw, supermarket, opts = {}) {
   if (!raw || typeof raw !== 'object') return null;
 
   const name = buildDisplayName(raw);
@@ -2002,12 +2079,13 @@ function normalizeItem(raw, supermarket) {
       ? Number((originalPrice - price).toFixed(2))
       : null;
 
-  let url = extractProductUrl(raw, supermarket);
-  if (supermarket === 'Woolworths') {
-    url =
-      normalizeWoolworthsUrlToStockcodeOnly(url, raw) ||
-      buildWoolworthsProductUrl(raw);
-  }
+  const url =
+    supermarket === 'Woolworths'
+      ? resolveWoolworthsProductUrl(raw, {
+          scannedBarcode: opts.scannedBarcode,
+          searchTerm: opts.searchTerm,
+        })
+      : extractProductUrl(raw, supermarket);
 
   const image =
     raw.image ||
