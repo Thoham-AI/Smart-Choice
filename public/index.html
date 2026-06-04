@@ -11,7 +11,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=14">
+    <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
     <div class="app-container">
@@ -123,7 +123,7 @@
         <section class="ai-list-section">
             <div class="ai-list-header">
                 <h2>AI Shopping List</h2>
-                <p class="ai-list-hint">Paste a list — we find the best split across Coles, Woolworths &amp; ALDI.</p>
+                <p class="ai-list-hint">Paste a list — we find the best split across Coles and Woolworths.</p>
             </div>
             <div class="ai-list-row">
                 <textarea
@@ -198,16 +198,15 @@
 
         <section id="aligned-compare-section" class="aligned-compare-section hidden">
             <h2>Compare by item</h2>
-            <p class="aligned-compare-hint">Rows follow matched Coles ↔ Woolworths pairs; ALDI is added per row only when it truly matches. Empty dashed cells mean no match at that store.</p>
+            <p class="aligned-compare-hint">Rows follow matched Coles ↔ Woolworths pairs. Empty dashed cells mean no match at that store.</p>
             <div id="store-filter-toolbar" class="store-filter-toolbar hidden" role="group" aria-label="Show or hide store columns">
                 <button type="button" class="store-filter-btn woolies is-active" data-store="woolworths" aria-pressed="true">🟢 Woolworths</button>
                 <button type="button" class="store-filter-btn coles is-active" data-store="coles" aria-pressed="true">🔴 Coles</button>
-                <button type="button" class="store-filter-btn aldi is-active" data-store="aldi" aria-pressed="true">🔵 ALDI</button>
             </div>
-            <div id="aligned-compare-rows" class="aligned-compare-rows cols-3"></div>
+            <div id="aligned-compare-rows" class="aligned-compare-rows cols-2"></div>
         </section>
 
-        <main class="comparison-grid comparison-grid--browse comparison-grid--three hidden">
+        <main class="comparison-grid comparison-grid--browse comparison-grid--two hidden">
             <div class="store-column" id="woolies-col">
                 <div class="store-brand woolies-brand">
                     <h2>Woolworths</h2>
@@ -222,15 +221,6 @@
                     <h2>Coles</h2>
                 </div>
                 <div id="coles-results" class="results-list">
-                    <p class="status-text">Enter an item to see prices...</p>
-                </div>
-            </div>
-
-            <div class="store-column" id="aldi-col">
-                <div class="store-brand aldi-brand">
-                    <h2>ALDI</h2>
-                </div>
-                <div id="aldi-results" class="results-list">
                     <p class="status-text">Enter an item to see prices...</p>
                 </div>
             </div>
@@ -274,7 +264,7 @@
             </p>
             <p class="site-footer-legal">
                 SmartChoice is an independent platform built for consumer price comparison purposes.
-                We are not officially affiliated with, do not represent, and are not authorized by Coles Supermarkets, Woolworths Group, or ALDI Australia.
+                We are not officially affiliated with, do not represent, and are not authorized by Coles Supermarkets or Woolworths Group.
                 Brand names, logos, and product images are the copyright of their respective owners.
             </p>
         </footer>
@@ -295,7 +285,7 @@
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=50"></script>
+    <script src="/script.js?v=51"></script>
     <script src="/barcode-scanner.js?v=4"></script>
     <script src="/app.js?v=6"></script>
 

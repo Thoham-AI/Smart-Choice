@@ -1098,13 +1098,9 @@ body {
 
 .ai-split-columns {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
     margin-bottom: 20px;
-}
-
-.ai-split-col.aldi h3 {
-    color: #002a54;
 }
 
 .ai-split-col h3 {
@@ -1433,8 +1429,8 @@ button:hover {
     gap: 20px;
 }
 
-.comparison-grid--three {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+.comparison-grid--two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .store-column {
@@ -1448,11 +1444,6 @@ button:hover {
 
 .woolies-brand h2 { color: var(--ww-green); border-bottom: 3px solid var(--ww-green); padding-bottom: 10px; }
 .coles-brand h2 { color: var(--coles-red); border-bottom: 3px solid var(--coles-red); padding-bottom: 10px; }
-.aldi-brand h2 {
-    color: #002a54;
-    border-bottom: 3px solid #ffc20e;
-    padding-bottom: 10px;
-}
 
 .product-card {
     border: 1px solid var(--border-color);
@@ -1589,7 +1580,7 @@ button:hover {
     margin-top: 10px;
 }
 
-/* Hàng ngang so sánh theo từ khóa (WW / Coles / ALDI) */
+/* Hàng ngang so sánh theo từ khóa (WW / Coles) */
 .aligned-compare-section {
     margin-bottom: 28px;
 }
@@ -1638,12 +1629,6 @@ button:hover {
     color: var(--coles-red);
 }
 
-.store-filter-btn.aldi.is-active {
-    border-color: #002a54;
-    color: #002a54;
-    background: #fff;
-}
-
 .store-filter-btn:not(.is-active):hover {
     opacity: 0.75;
 }
@@ -1660,10 +1645,6 @@ button:hover {
 
 #aligned-compare-rows.cols-2 .aligned-row-stores {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-#aligned-compare-rows.cols-3 .aligned-row-stores {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .aligned-store-cell.store-col-hidden {
@@ -1748,7 +1729,6 @@ button:hover {
 
 .aligned-store-cell .store-label.woolies { color: var(--ww-green); }
 .aligned-store-cell .store-label.coles { color: var(--coles-red); }
-.aligned-store-cell .store-label.aldi { color: #002a54; }
 
 .aligned-store-cell.unavailable {
     background: #f3f4f6;
@@ -1840,10 +1820,6 @@ button:hover {
 
 .badge.woolies-win { background: #008a00; }
 .badge.coles-win { background: #e01a22; }
-.badge.aldi-win {
-    background: #002a54;
-    color: #ffc20e;
-}
 .badge.tie { background: #6b7280; }
 
 .save-text {
@@ -2227,7 +2203,7 @@ button:hover {
     }
 
     .comparison-grid,
-    .comparison-grid--three,
+    .comparison-grid--two,
     .aligned-row-stores {
         grid-template-columns: 1fr;
     }

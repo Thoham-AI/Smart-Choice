@@ -17,7 +17,6 @@ const { AsyncLocalStorage } = require('async_hooks');
 const { MongoClient } = require('mongodb');
 const OpenAI = require('openai');
 const stringSimilarity = require('string-similarity');
-const { fetchAldiSearchRawList } = require('./aldi-client');
 
 /** Thư mục front-end tĩnh: ../public (tương đối với api/index.js) */
 const PUBLIC_DIR = path.join(__dirname, '../public');
@@ -103,8 +102,8 @@ const RAPIDAPI_KEY =
   process.env.RAPIDAPI_KEY || process.env.RAPID_API_KEY || '';
 const COLES_HOST      = 'coles-australia-full-catalog-pricing-intelligence-api.p.rapidapi.com';
 const WOOLWORTHS_HOST = 'woolworths-australia-product-category-api.p.rapidapi.com';
-/** Supported supermarkets for compare + AI cart (ALDI via api.aldi.com.au). */
-const SUPPORTED_SUPERMARKETS = ['Coles', 'Woolworths', 'ALDI'];
+/** Supported supermarkets for compare + AI cart. */
+const SUPPORTED_SUPERMARKETS = ['Coles', 'Woolworths'];
 
 const RESULT_LIMIT = 20;   // số sản phẩm tối đa mỗi siêu thị
 /** Khi không có cặp WW↔Coles, giới hạn hàng chỉ 1 siêu thị (tránh 20 dòng Coles-only). */
@@ -342,10 +341,10 @@ function isApiTimeoutError(error) {
 
 /**
  * Production-safe: siêu thị lỗi (timeout, block IP, 403/429/5xx) → trả [] thay vì throw.
- * Chỉ áp dụng Woolworths & ALDI — Coles vẫn báo lỗi qua safeFetch nếu cần.
+ * Chỉ áp dụng Woolworths — Coles vẫn báo lỗi qua safeFetch nếu cần.
  */
 function shouldSoftFailStoreRawList(supermarket) {
-  return supermarket === 'Woolworths' || supermarket === 'ALDI';
+  return supermarket === 'Woolworths';
 }
 
 function logStoreSoftFail(supermarket, keyword, error, apiTimeout) {
@@ -463,7 +462,7 @@ async function tryReadApiCache(supermarket, keyword, location) {
   const mem = readMemoryApiCache(supermarket, keyword, location);
   if (mem != null) {
     console.log(`  ⚡ ${supermarket} memory cache hit: "${keyword}"`);
-    return supermarket === 'Woolworths' ? refreshWoolworthsUrlsInRawList(mem) : mem;
+    return refreshStoreUrlsInRawList(supermarket, mem);
   }
 
   if (!MONGODB_URI || isMongoInCooldown()) return null;
@@ -478,10 +477,7 @@ async function tryReadApiCache(supermarket, keyword, location) {
       'MongoDB cache read'
     );
     if (payload != null) {
-      const normalized =
-        supermarket === 'Woolworths'
-          ? refreshWoolworthsUrlsInRawList(payload)
-          : payload;
+      const normalized = refreshStoreUrlsInRawList(supermarket, payload);
       writeMemoryApiCache(supermarket, keyword, normalized, location);
       return normalized;
     }
@@ -502,7 +498,7 @@ async function tryReadStaleApiCache(supermarket, keyword, location) {
 
   const mem = readMemoryApiCache(supermarket, keyword, location);
   if (mem != null) {
-    return supermarket === 'Woolworths' ? refreshWoolworthsUrlsInRawList(mem) : mem;
+    return refreshStoreUrlsInRawList(supermarket, mem);
   }
 
   if (!MONGODB_URI || isMongoInCooldown()) return null;
@@ -517,10 +513,7 @@ async function tryReadStaleApiCache(supermarket, keyword, location) {
       'MongoDB stale cache read'
     );
     if (payload != null) {
-      const normalized =
-        supermarket === 'Woolworths'
-          ? refreshWoolworthsUrlsInRawList(payload)
-          : payload;
+      const normalized = refreshStoreUrlsInRawList(supermarket, payload);
       writeMemoryApiCache(supermarket, keyword, normalized, location);
       return normalized;
     }
@@ -1240,6 +1233,11 @@ function resolveWoolworthsProductUrl(raw, options = {}) {
   return '';
 }
 
+function refreshStoreUrlsInRawList(supermarket, rawList) {
+  if (supermarket === 'Woolworths') return refreshWoolworthsUrlsInRawList(rawList);
+  return rawList;
+}
+
 /** Ghi đè URL Woolworths trong cache — PDP (StockCode) hoặc search/products chuẩn. */
 function refreshWoolworthsUrlsInRawList(rawList) {
   if (!Array.isArray(rawList)) return rawList;
@@ -1287,12 +1285,6 @@ function extractProductUrl(raw, supermarket) {
 
   if (supermarket === 'Woolworths') {
     return resolveWoolworthsProductUrl(raw);
-  }
-
-  if (supermarket === 'ALDI' && raw.slug && raw.sku) {
-    const slug = String(raw.slug).replace(/^\//, '');
-    const sku = String(raw.sku).replace(/\D/g, '');
-    if (slug && sku) return `https://www.aldi.com.au/product/${slug}/p/${sku}`;
   }
 
   return '';
@@ -1347,9 +1339,6 @@ function extractSizeFromSlug(slug) {
 
 /** ID ổn định từ stockcode (WW) hoặc slug (Coles) – dùng cho watchlist */
 function extractProductId(raw, supermarket) {
-  if (supermarket === 'ALDI' && raw.sku) {
-    return `aldi-${String(raw.sku).replace(/\D/g, '')}`;
-  }
   if (supermarket === 'Woolworths' && raw.stockcode != null) {
     return `ww-${raw.stockcode}`;
   }
@@ -1468,7 +1457,7 @@ function extractUnitPricePerKg(product) {
 }
 
 /**
- * Compare prices across two or more normalized products (Coles / Woolworths / ALDI).
+ * Compare prices across two or more normalized products (Coles / Woolworths).
  * @param {object[]} products — normalized product objects with .supermarket set
  */
 function compareStoresForCheaper(products) {
@@ -1647,6 +1636,211 @@ const FRESH_FOOD_TOKENS = [
 
 const FRESH_PAIR_SCORE_FLOOR = 0.62;
 const FRESH_LIST_MATCH_THRESHOLD = 0.32;
+
+/** Top N sản phẩm rẻ nhất ($/kg) được quét trước khi chọn khớp bản chất. */
+const MATCH_PRICE_PER_KG_POOL = 5;
+
+/** Từ khóa ý định thịt/nguyên liệu tươi (không đồ chế biến sẵn). */
+const RAW_MEAT_CUT_KEYWORDS = [
+  'thigh',
+  'breast',
+  'fillet',
+  'mince',
+  'steak',
+  'rump',
+  'chop',
+  'cutlet',
+  'drumstick',
+  'shoulder',
+  'belly',
+  'loin',
+  'backstrap',
+  'tenderloin',
+  'cut',
+  'roast',
+  'rack',
+  'shank',
+  'neck',
+];
+
+/** Người dùng chủ đích tìm đồ chế biến — cho phép burger/nuggets. */
+const PROCESSED_FOOD_INTENT_KEYWORDS = [
+  'burger',
+  'burgers',
+  'nugget',
+  'nuggets',
+  'pizza',
+  'schnitzel',
+  'schnitzels',
+  'ready meal',
+  'ready meals',
+  'pie',
+  'pies',
+  'sausage roll',
+  'hot dog',
+  'kiev',
+  'parmigiana',
+  'tender',
+  'tenders',
+];
+
+/** Loại ngay khi tìm nguyên liệu tươi nhưng tên sản phẩm là đồ chế biến. */
+const PROCESSED_FOOD_NEGATIVE_PATTERNS = [
+  /\bburgers?\b/,
+  /\bpizzas?\b/,
+  /\bnuggets?\b/,
+  /\bschnitzels?\b/,
+  /\bready meals?\b/,
+  /\bheat and eat\b/,
+  /\bmicrowave meal\b/,
+  /\bmeal kit\b/,
+  /\bcrumbed\b/,
+  /\bbattered\b/,
+  /\bcoated\b/,
+  /\bpatties?\b/,
+  /\bmeatballs?\b/,
+  /\bdumplings?\b/,
+  /\bdim sim\b/,
+  /\bspring rolls?\b/,
+  /\bcordon bleu\b/,
+  /\b(kiev|kyiv)\b/,
+  /\bparmigiana\b/,
+  /\bsausage rolls?\b/,
+  /\bhot dogs?\b/,
+  /\bpies?\b/,
+  /\bpast(?:y|ies)\b/,
+  /\bsauces?\b/,
+  /\bseasonings?\b/,
+  /\bpastes?\b/,
+  /\bmarinades?\b/,
+  /\bstocks?\b/,
+  /\bbroths?\b/,
+  /\bpowders?\b/,
+  /\bnoodles?\b/,
+  /\binstant\b/,
+  /\bsoups?\b/,
+  /\bdips?\b/,
+  /\bcrackers?\b/,
+  /\bchips?\b/,
+  /\bcrisps?\b/,
+  /\bflavou?red\b/,
+  /\bflavou?r\b/,
+];
+
+/** Quy tắc khớp sản phẩm (AI Analyzer + thuật toán local). */
+const PRODUCT_MATCHING_RULES = `You are a strict grocery price analyzer. When matching products between Coles and Woolworths, you MUST match raw ingredients with raw ingredients. Never match raw meat (e.g., chicken thigh fillets) with processed food (e.g., chicken burgers or nuggets), even if they share keywords. Always prioritize the alternative item that offers the lowest price per kilogram ($/kg) and matches the exact form of the user's intent.`;
+
+function searchIntentSuggestsProcessedFood(keyword, listItem = {}) {
+  const norm = normalizeNameForMatch(stripWeightFromText(keyword || listItem.keyword || ''));
+  if (!norm) return false;
+  return PROCESSED_FOOD_INTENT_KEYWORDS.some((token) => haystackHasWord(norm, token));
+}
+
+/** Ý định mua nguyên liệu tươi (thịt/cá cắt), không burger/pizza. */
+function searchIntentSuggestsRawIngredient(keyword, listItem = {}) {
+  const norm = normalizeNameForMatch(stripWeightFromText(keyword || listItem.keyword || ''));
+  if (!norm) return false;
+  if (searchIntentSuggestsProcessedFood(keyword, listItem)) return false;
+
+  if (RAW_MEAT_CUT_KEYWORDS.some((token) => haystackHasWord(norm, token))) return true;
+  if (haystackHasWord(norm, 'meat')) return true;
+
+  const meatSeaTokens = [
+    'prawn',
+    'shrimp',
+    'salmon',
+    'barramundi',
+    'fish',
+    'pork',
+    'beef',
+    'lamb',
+    'chicken',
+    'turkey',
+    'duck',
+    'seafood',
+    'crab',
+    'squid',
+  ];
+  if (
+    meatSeaTokens.some((kw) => haystackHasWord(norm, kw)) &&
+    !/\b(cracker|crackers|sauce|stock|powder|noodle|paste|juice)\b/.test(norm)
+  ) {
+    return true;
+  }
+
+  return isFreshFoodCategory(keyword) && !searchIntentSuggestsProcessedFood(keyword, listItem);
+}
+
+function nameSuggestsProcessedPreparedFood(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  if (!nameNorm) return false;
+  return PROCESSED_FOOD_NEGATIVE_PATTERNS.some((pattern) => pattern.test(nameNorm));
+}
+
+/** $/kg để sort — ưu tiên pricePerKg, suy ra từ gói, cuối cùng pack price. */
+function getProductComparablePricePerKg(product) {
+  if (!product) return Number.POSITIVE_INFINITY;
+
+  const direct = Number(product.pricePerKg);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const shelf = Number(product.packShelfPrice ?? product.price);
+  const packKg =
+    product.packWeightKg != null && product.packWeightKg > 0
+      ? Number(product.packWeightKg)
+      : getPackWeightKgFromProduct(product.name || '', product);
+
+  if (Number.isFinite(shelf) && shelf > 0 && packKg != null && packKg > 0) {
+    return shelf / packKg;
+  }
+
+  if (Number.isFinite(shelf) && shelf > 0) return shelf * 1000;
+
+  return Number.POSITIVE_INFINITY;
+}
+
+/** Tên phải chứa ít nhất một từ khóa có nghĩa từ query (tránh match bừa). */
+function productNameContainsSearchKeywords(displayName, keyword, listItem = {}) {
+  const core = stripWeightFromText(keyword || listItem.keyword || '');
+  const words = normalizeNameForMatch(core)
+    .split(' ')
+    .filter((w) => w.length > 2 && !['fresh', 'free', 'range', 'organic'].includes(w));
+
+  if (!words.length) return true;
+
+  const nameNorm = normalizeNameForMatch(displayName);
+  return words.some((word) => haystackHasWord(nameNorm, word));
+}
+
+function scoreProductForMatching(product, keyword, listItem = {}) {
+  const hint = buildQuantityHint(listItem);
+  let score = scoreProductForKeyword(product.name, keyword, hint, listItem, product);
+  if (resolveProductBucket(product) === CATEGORY_BUCKETS.FRESH_PRODUCE) {
+    score = Math.min(score + 0.06, 1);
+  }
+  return score;
+}
+
+/**
+ * Trong pool rẻ nhất theo $/kg, chọn sản phẩm khớp bản chất nhất.
+ */
+function pickBestFromPricePerKgPool(scoredEntries, keyword, listItem = {}) {
+  if (!scoredEntries.length) return { product: null, score: 0 };
+
+  const priced = scoredEntries
+    .filter((entry) => entry.score > 0)
+    .slice()
+    .sort(
+      (a, b) =>
+        getProductComparablePricePerKg(a.product) - getProductComparablePricePerKg(b.product)
+    );
+
+  const pool = priced.slice(0, MATCH_PRICE_PER_KG_POOL);
+  if (!pool.length) return { product: null, score: 0 };
+
+  pool.sort((a, b) => b.score - a.score);
+  return { product: pool[0].product, score: pool[0].score };
+}
 
 /** Bỏ phần cân nặng khỏi chuỗi tìm kiếm (1kg, 500g, 2 L, …) */
 function stripWeightFromText(text) {
@@ -2480,17 +2674,26 @@ function haystackSuggestsMeatSeafood(haystack) {
   return /\b(meat|seafood|poultry|butcher|deli meat|fish)\b/i.test(haystack);
 }
 
-/** Sản phẩm chế biến chỉ “mượn” từ khóa (vd: prawn → crackers/sauce, không phải tôm tươi). */
+/** Sản phẩm chế biến chỉ “mượn” từ khóa (vd: chicken thigh → Thigh Burger, prawn → crackers). */
 function nameSuggestsProcessedNotCoreIngredient(displayName, keyword) {
   const nameNorm = normalizeNameForMatch(displayName);
   const kwNorm = normalizeNameForMatch(stripWeightFromText(keyword));
   const primary = kwNorm.split(' ').filter((w) => w.length > 2)[0];
   if (!primary) return false;
-  if (!haystackHasWord(nameNorm, primary)) return false;
 
-  return /\b(cracker|crackers|chip|chips|crisp|crisps|sauce|paste|stock|broth|powder|seasoning|noodle|noodles|instant|dim sim|spring roll|soup|dip|dips|marinade|rice paper|paper|flavour|flavor|flavoured|flavored)\b/.test(
-    nameNorm
-  );
+  const sharesKeyword = haystackHasWord(nameNorm, primary);
+
+  if (searchIntentSuggestsProcessedFood(keyword)) {
+    return false;
+  }
+
+  if (searchIntentSuggestsRawIngredient(keyword) && nameSuggestsProcessedPreparedFood(displayName)) {
+    return true;
+  }
+
+  if (!sharesKeyword) return false;
+
+  return nameSuggestsProcessedPreparedFood(displayName);
 }
 
 /** Kẹo/snack/rượu – tên có "watermelon" nhưng không phải quả tươi. */
@@ -2664,6 +2867,10 @@ function areProductCategoriesCompatible(productA, productB) {
 
   if ((drinkA && freshB) || (drinkB && freshA)) return false;
 
+  const procA = nameSuggestsProcessedPreparedFood(nameA);
+  const procB = nameSuggestsProcessedPreparedFood(nameB);
+  if (procA !== procB) return false;
+
   return areCategoryBucketsCompatible(bucketA, bucketB);
 }
 
@@ -2681,17 +2888,6 @@ function inferIntentBucketFromKeyword(keyword, listItem = {}) {
     return CATEGORY_BUCKETS.DRINKS;
   }
 
-  if (PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(norm, kw))) {
-    return CATEGORY_BUCKETS.FRESH_PRODUCE;
-  }
-
-  if (isFreshFoodCategory(core)) {
-    const unit = String(listItem.unit || '').toLowerCase();
-    if (['kg', 'g', 'each', 'bunch'].includes(unit)) {
-      return CATEGORY_BUCKETS.FRESH_PRODUCE;
-    }
-  }
-
   const meatSeaTokens = [
     'prawn',
     'shrimp',
@@ -2707,15 +2903,33 @@ function inferIntentBucketFromKeyword(keyword, listItem = {}) {
     'mince',
     'steak',
     'fillet',
+    'thigh',
+    'breast',
+    'drumstick',
     'seafood',
     'crab',
     'squid',
   ];
-  if (
+  const looksLikeMeatSeafood =
     meatSeaTokens.some((kw) => haystackHasWord(norm, kw)) &&
-    !/\b(cracker|crackers|sauce|stock|powder|noodle|paste|juice)\b/.test(norm)
-  ) {
+    !/\b(cracker|crackers|sauce|stock|powder|noodle|paste|juice)\b/.test(norm);
+
+  if (looksLikeMeatSeafood) {
+    if (searchIntentSuggestsProcessedFood(keyword, listItem)) {
+      return null;
+    }
     return CATEGORY_BUCKETS.MEAT_SEAFOOD;
+  }
+
+  if (PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(norm, kw))) {
+    return CATEGORY_BUCKETS.FRESH_PRODUCE;
+  }
+
+  if (isFreshFoodCategory(core)) {
+    const unit = String(listItem.unit || '').toLowerCase();
+    if (['kg', 'g', 'each', 'bunch'].includes(unit)) {
+      return CATEGORY_BUCKETS.FRESH_PRODUCE;
+    }
   }
 
   return null;
@@ -2784,6 +2998,7 @@ function filterProductsForSearchIntent(products, keyword, listItem = {}) {
   if (intent === CATEGORY_BUCKETS.FRESH_PRODUCE) {
     return products.filter((p) => {
       const name = p?.name || '';
+      if (nameSuggestsProcessedNotCoreIngredient(name, keyword)) return false;
       if (nameSuggestsPackagedDrink(name)) return false;
       if (nameSuggestsNonFreshProduceSnack(name)) return false;
       if (resolveProductBucket(p) === CATEGORY_BUCKETS.DRINKS) return false;
@@ -2952,6 +3167,13 @@ function scoreProductPair(woolInput, colesInput) {
   // Drinks ↔ Fresh (vd: H2juice Watermelon vs Seedless Watermelon) → không ghép
   if (!areProductCategoriesCompatible(woolInput, colesInput)) return 0;
 
+  if (
+    nameSuggestsProcessedPreparedFood(woolName) !==
+    nameSuggestsProcessedPreparedFood(colesName)
+  ) {
+    return 0;
+  }
+
   // Cùng cụm "pork belly" → ghép dù khác Roast / Slices / Rind On
   if (freshFoodCorePhraseMatch(woolName, colesName)) {
     const base = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
@@ -3075,31 +3297,24 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
     return { product: null, score: 0 };
   }
 
-  const hint = buildQuantityHint(listItem);
-  let best = null;
-  let bestScore = 0;
+  const scored = candidates
+    .filter((product) => productNameContainsSearchKeywords(product.name, keyword, listItem))
+    .map((product) => ({
+      product,
+      score: scoreProductForMatching(product, keyword, listItem),
+    }));
 
-  for (const product of candidates) {
-    let score = scoreProductForKeyword(
-      product.name,
-      keyword,
-      hint,
-      listItem,
-      product
-    );
-    if (resolveProductBucket(product) === CATEGORY_BUCKETS.FRESH_PRODUCE) {
-      score = Math.min(score + 0.06, 1);
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      best = product;
-    }
-  }
+  const { product: best, score: bestScore } = pickBestFromPricePerKgPool(
+    scored,
+    keyword,
+    listItem
+  );
 
   let threshold =
     isProduceSearchIntent(keyword, listItem) ||
     isFreshFoodCategory(keyword) ||
-    isFreshFoodCategory(best?.name)
+    isFreshFoodCategory(best?.name) ||
+    searchIntentSuggestsRawIngredient(keyword, listItem)
       ? FRESH_LIST_MATCH_THRESHOLD
       : LIST_MATCH_THRESHOLD;
 
@@ -3110,6 +3325,14 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
     !nameSuggestsPackagedDrink(best.name)
   ) {
     threshold = Math.min(threshold, 0.26);
+  }
+
+  if (
+    best &&
+    searchIntentSuggestsRawIngredient(keyword, listItem) &&
+    freshFoodCorePhraseMatch(best.name, keyword)
+  ) {
+    threshold = Math.min(threshold, 0.28);
   }
 
   if (!best || bestScore < threshold) {
@@ -3157,20 +3380,19 @@ function buildStoreOptionsForKeyword(products, keyword, listItem = {}) {
   const candidates = filterProductsForSearchIntent(products, keyword, listItem);
   if (!candidates.length) return [];
 
-  const hint = buildQuantityHint(listItem);
-  const kw = String(listItem.keyword || keyword || '').trim();
-
-  const scored = candidates.map((product) => {
-    let score = scoreProductForKeyword(product.name, kw, hint, listItem, product);
-    if (resolveProductBucket(product) === CATEGORY_BUCKETS.FRESH_PRODUCE) {
-      score = Math.min(score + 0.06, 1);
-    }
-    return { product, score };
-  });
+  const scored = candidates
+    .filter((product) => productNameContainsSearchKeywords(product.name, keyword, listItem))
+    .map((product) => ({
+      product,
+      score: scoreProductForMatching(product, keyword, listItem),
+    }))
+    .filter((entry) => entry.score > 0);
 
   scored.sort((a, b) => {
     if (Math.abs(b.score - a.score) > 0.02) return b.score - a.score;
-    return (a.product.price || 0) - (b.product.price || 0);
+    return (
+      getProductComparablePricePerKg(a.product) - getProductComparablePricePerKg(b.product)
+    );
   });
 
   return scored.map((entry) => entry.product);
@@ -3183,20 +3405,9 @@ function productStableKey(product) {
   return `${product.supermarket || ''}:${product.name || ''}:${product.price ?? ''}`;
 }
 
-/**
- * Lọc ALDI trước khi xếp hàng — tên PHẢI chứa từ khóa (loại Basa, Baked Beans, catalog lạ).
- */
-function filterAldiProductsByKeywordTitle(products, keyword) {
-  const kw = String(keyword || '').trim().toLowerCase();
-  if (!kw || !Array.isArray(products)) return [];
-  return products.filter(
-    (item) => item && item.name && item.name.toLowerCase().includes(kw)
-  );
-}
-
 /** Gắn so sánh giá rẻ nhất cho một hàng ma trận (chỉ các ô có sản phẩm). */
 function attachMatrixRowComparison(matrixRow) {
-  const available = [matrixRow.woolworths, matrixRow.coles, matrixRow.aldi].filter(Boolean);
+  const available = [matrixRow.woolworths, matrixRow.coles].filter(Boolean);
   if (available.length >= 2) {
     const cmp = compareStoresForCheaper(available);
     matrixRow.cheapestStore = cmp.cheaper === 'tie' ? null : cmp.cheaper;
@@ -3217,18 +3428,13 @@ function attachMatrixRowComparison(matrixRow) {
 /**
  * Ma trận so sánh (alignedRows / synchronizedRows):
  * - Hàng gốc = cặp Similar Coles ↔ Woolworths + món WW/Coles chưa ghép
- * - ALDI: lọc tên chứa keyword → gán filteredAldi[i] || null theo chỉ số hàng
- * - Hết bánh croissant → ô ALDI null (nét đứt), không nhét cá basa / đậu hộp
  */
-function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems, aldiItems) {
+function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems) {
   const item = listItem || buildListItemForKeywordSearch(keyword);
   const kw = String(keyword || item.keyword || '').trim();
 
   const woolworthsOptions = buildStoreOptionsForKeyword(woolItems, item.keyword, item);
   const colesOptions = buildStoreOptionsForKeyword(colesItems, item.keyword, item);
-
-  // Lọc cứng ALDI — chỉ món có tên chứa từ khóa (vd "croissant")
-  const filteredAldi = filterAldiProductsByKeywordTitle(aldiItems, kw);
 
   const similarPairs = buildSimilarPairs(woolworthsOptions, colesOptions);
   const usedWoolKeys = new Set();
@@ -3241,13 +3447,11 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems, ald
     usedWoolKeys.add(productStableKey(pair.woolworths));
     usedColesKeys.add(productStableKey(pair.coles));
 
-    const rowIndex = matrixRows.length;
     matrixRows.push(
       attachMatrixRowComparison({
-        rowIndex,
+        rowIndex: matrixRows.length,
         woolworths: pair.woolworths,
         coles: pair.coles,
-        aldi: filteredAldi[rowIndex] || null,
         matchType: 'similar_pair',
         similarity: pair.similarity,
       })
@@ -3260,13 +3464,11 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems, ald
     if (usedWoolKeys.has(key)) continue;
     usedWoolKeys.add(key);
 
-    const rowIndex = matrixRows.length;
     matrixRows.push(
       attachMatrixRowComparison({
-        rowIndex,
+        rowIndex: matrixRows.length,
         woolworths: wool,
         coles: null,
-        aldi: filteredAldi[rowIndex] || null,
         matchType: 'woolworths_only',
       })
     );
@@ -3278,13 +3480,11 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems, ald
     if (usedColesKeys.has(key)) continue;
     usedColesKeys.add(key);
 
-    const rowIndex = matrixRows.length;
     matrixRows.push(
       attachMatrixRowComparison({
-        rowIndex,
+        rowIndex: matrixRows.length,
         woolworths: null,
         coles,
-        aldi: filteredAldi[rowIndex] || null,
         matchType: 'coles_only',
       })
     );
@@ -3298,13 +3498,12 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems, ald
     storeCounts: {
       woolworths: woolworthsOptions.length,
       coles: colesOptions.length,
-      aldi: filteredAldi.length,
     },
   };
 }
 
-/** Ma trận 1 hàng khi quét barcode — hiển thị trực tiếp sản phẩm từng siêu thị (không lọc ALDI). */
-function buildAlignedCompareMatrixFromProducts(keyword, woolProduct, colesProduct, aldiProduct) {
+/** Ma trận 1 hàng khi quét barcode — hiển thị trực tiếp sản phẩm từng siêu thị. */
+function buildAlignedCompareMatrixFromProducts(keyword, woolProduct, colesProduct) {
   const kw = String(keyword || '').trim();
 
   const matrixRows = [
@@ -3312,7 +3511,6 @@ function buildAlignedCompareMatrixFromProducts(keyword, woolProduct, colesProduc
       rowIndex: 0,
       woolworths: woolProduct || null,
       coles: colesProduct || null,
-      aldi: aldiProduct || null,
       matchType: 'barcode',
     }),
   ];
@@ -3324,7 +3522,6 @@ function buildAlignedCompareMatrixFromProducts(keyword, woolProduct, colesProduc
     storeCounts: {
       woolworths: woolProduct ? 1 : 0,
       coles: colesProduct ? 1 : 0,
-      aldi: aldiProduct ? 1 : 0,
     },
   };
 }
@@ -3597,9 +3794,6 @@ function storeLineHasUsablePrice(line, store) {
   if (store === 'coles') {
     return Boolean(line.coles) && Number(line.colesLinePrice) > 0;
   }
-  if (store === 'aldi') {
-    return Boolean(line.aldi) && Number(line.aldiLinePrice) > 0;
-  }
   return Boolean(line.woolworths) && Number(line.woolworthsLinePrice) > 0;
 }
 
@@ -3609,11 +3803,9 @@ function storeLineHasUsablePrice(line, store) {
 function enrichLineWithSingleStorePricing(line) {
   const colesUsable = storeLineHasUsablePrice(line, 'coles');
   const woolUsable = storeLineHasUsablePrice(line, 'woolworths');
-  const aldiUsable = storeLineHasUsablePrice(line, 'aldi');
 
   const colesActual = colesUsable ? Number(line.colesLinePrice) : 0;
   const woolActual = woolUsable ? Number(line.woolworthsLinePrice) : 0;
-  const aldiActual = aldiUsable ? Number(line.aldiLinePrice) : 0;
 
   const itemLabel = formatRequestKeywordLabel(line.request);
 
@@ -3621,7 +3813,6 @@ function enrichLineWithSingleStorePricing(line) {
     const prices = [];
     if (colesUsable) prices.push(colesActual);
     if (woolUsable) prices.push(woolActual);
-    if (aldiUsable) prices.push(aldiActual);
     return prices;
   };
 
@@ -3632,11 +3823,9 @@ function enrichLineWithSingleStorePricing(line) {
 
   let colesSingleStorePrice = colesUsable ? colesActual : imputeFromRivals();
   let woolSingleStorePrice = woolUsable ? woolActual : imputeFromRivals();
-  let aldiSingleStorePrice = aldiUsable ? aldiActual : imputeFromRivals();
 
   let colesIncomplete = !colesUsable && rivalPrices().length > 0;
   let woolIncomplete = !woolUsable && rivalPrices().length > 0;
-  let aldiIncomplete = !aldiUsable && rivalPrices().length > 0;
 
   const colesIncompleteNote = colesIncomplete
     ? `This store is missing ${itemLabel}; price estimated from other supermarkets for comparison.`
@@ -3644,22 +3833,16 @@ function enrichLineWithSingleStorePricing(line) {
   const woolIncompleteNote = woolIncomplete
     ? `This store is missing ${itemLabel}; price estimated from other supermarkets for comparison.`
     : null;
-  const aldiIncompleteNote = aldiIncomplete
-    ? `This store is missing ${itemLabel}; price estimated from other supermarkets for comparison.`
-    : null;
 
   return {
     ...line,
     colesSingleStorePrice: Number(colesSingleStorePrice.toFixed(2)),
     woolworthsSingleStorePrice: Number(woolSingleStorePrice.toFixed(2)),
-    aldiSingleStorePrice: Number(aldiSingleStorePrice.toFixed(2)),
     colesIncomplete,
     woolIncomplete,
-    aldiIncomplete,
     colesIncompleteNote,
     woolIncompleteNote,
-    aldiIncompleteNote,
-    is_incomplete: colesIncomplete || woolIncomplete || aldiIncomplete,
+    is_incomplete: colesIncomplete || woolIncomplete,
   };
 }
 
@@ -3679,10 +3862,14 @@ Return ONLY valid JSON: an array of objects with exactly these fields:
 - "unit": one of kg, g, L, ml, each, pack, bunch
 
 Rules:
-- Use simple product keywords suitable for Coles, Woolworths, and ALDI search.
+- Use simple product keywords suitable for Coles and Woolworths search.
+- Keep full raw-ingredient phrases intact (e.g. "chicken thigh", "pork belly", "beef mince") — do not shorten to generic "chicken" or "meat".
 - Convert volumes: 2L → quantity 2, unit "L". 500ml → quantity 500, unit "ml".
 - "2 kg rice" → keyword "rice", quantity 2, unit "kg".
-- No markdown, no explanation, only the JSON array.`;
+- No markdown, no explanation, only the JSON array.
+
+Product matching policy (for downstream analyzer):
+${PRODUCT_MATCHING_RULES}`;
 
 /** Gọi OpenAI để bóc tách danh sách món */
 async function parseShoppingListWithAI(promptText) {
@@ -3741,7 +3928,7 @@ function parseShoppingListFallback(promptText) {
 }
 
 /** Pick the cheapest store for one cart line (PRICE_EPSILON tie → lowest wins). */
-function pickCheapestStoreForLine(colesPriced, woolPriced, aldiPriced) {
+function pickCheapestStoreForLine(colesPriced, woolPriced) {
   const candidates = [];
   if (colesPriced && Number(colesPriced.price) > 0) {
     candidates.push({ store: 'Coles', product: colesPriced, price: Number(colesPriced.price) });
@@ -3752,9 +3939,6 @@ function pickCheapestStoreForLine(colesPriced, woolPriced, aldiPriced) {
       product: woolPriced,
       price: Number(woolPriced.price),
     });
-  }
-  if (aldiPriced && Number(aldiPriced.price) > 0) {
-    candidates.push({ store: 'ALDI', product: aldiPriced, price: Number(aldiPriced.price) });
   }
 
   if (!candidates.length) {
@@ -3773,14 +3957,13 @@ function pickCheapestStoreForLine(colesPriced, woolPriced, aldiPriced) {
   };
 }
 
-/** Resolve best product match for one line at Coles, Woolworths, and ALDI (parallel). */
+/** Resolve best product match for one line at Coles and Woolworths (parallel). */
 async function resolveListItem(listItem) {
   const searchQuery = buildSearchQueryFromListItem(listItem);
 
-  const [colesSettled, woolSettled, aldiSettled] = await Promise.allSettled([
+  const [colesSettled, woolSettled] = await Promise.allSettled([
     resolveStoreLineMatch('Coles', searchQuery, listItem),
     resolveStoreLineMatch('Woolworths', searchQuery, listItem),
-    resolveStoreLineMatch('ALDI', searchQuery, listItem),
   ]);
 
   const colesResult =
@@ -3801,28 +3984,16 @@ async function resolveListItem(listItem) {
           error: formatStoreError('Woolworths', woolSettled.reason),
           packageFallback: false,
         };
-  const aldiResult =
-    aldiSettled.status === 'fulfilled'
-      ? aldiSettled.value
-      : {
-          product: null,
-          score: 0,
-          error: formatStoreError('ALDI', aldiSettled.reason),
-          packageFallback: false,
-        };
 
   const colesPriced = colesResult.product;
   const woolPriced = woolResult.product;
-  const aldiPriced = aldiResult.product;
 
   const colesPrice = colesPriced?.price ?? 0;
   const woolPrice = woolPriced?.price ?? 0;
-  const aldiPrice = aldiPriced?.price ?? 0;
 
   const { chosenStore, chosenProduct, lineTotal } = pickCheapestStoreForLine(
     colesPriced,
-    woolPriced,
-    aldiPriced
+    woolPriced
   );
 
   const baseLine = {
@@ -3830,20 +4001,15 @@ async function resolveListItem(listItem) {
     searchQuery,
     coles: colesPriced,
     woolworths: woolPriced,
-    aldi: aldiPriced,
     colesLinePrice: colesPrice,
     woolworthsLinePrice: woolPrice,
-    aldiLinePrice: aldiPrice,
     colesMatchScore: colesResult.score,
     woolworthsMatchScore: woolResult.score,
-    aldiMatchScore: aldiResult.score,
     colesPackageFallback: Boolean(colesResult.packageFallback),
     woolworthsPackageFallback: Boolean(woolResult.packageFallback),
-    aldiPackageFallback: Boolean(aldiResult.packageFallback),
     storeErrors: {
       coles: colesResult.error,
       woolworths: woolResult.error,
-      aldi: aldiResult.error,
     },
     chosenStore,
     chosenProduct,
@@ -3860,22 +4026,19 @@ async function resolveListItem(listItem) {
 function buildCartOptimization(lineItems) {
   let colesOnlyTotal = 0;
   let woolworthsOnlyTotal = 0;
-  let aldiOnlyTotal = 0;
   let splitTotal = 0;
-  const splitCart = { coles: [], woolworths: [], aldi: [] };
+  const splitCart = { coles: [], woolworths: [] };
   const unresolved = [];
   const incompleteWarnings = [];
 
   for (const line of lineItems) {
     const colesUsable = storeLineHasUsablePrice(line, 'coles');
     const woolUsable = storeLineHasUsablePrice(line, 'woolworths');
-    const aldiUsable = storeLineHasUsablePrice(line, 'aldi');
 
     colesOnlyTotal += line.colesSingleStorePrice ?? line.colesLinePrice ?? 0;
     woolworthsOnlyTotal += line.woolworthsSingleStorePrice ?? line.woolworthsLinePrice ?? 0;
-    aldiOnlyTotal += line.aldiSingleStorePrice ?? line.aldiLinePrice ?? 0;
 
-    if (!colesUsable && !woolUsable && !aldiUsable && line.request?.keyword) {
+    if (!colesUsable && !woolUsable && line.request?.keyword) {
       unresolved.push(line.request.keyword);
     }
 
@@ -3885,11 +4048,8 @@ function buildCartOptimization(lineItems) {
     if (line.woolIncomplete && line.woolIncompleteNote) {
       incompleteWarnings.push({ store: 'Woolworths', message: line.woolIncompleteNote });
     }
-    if (line.aldiIncomplete && line.aldiIncompleteNote) {
-      incompleteWarnings.push({ store: 'ALDI', message: line.aldiIncompleteNote });
-    }
 
-    if (!colesUsable && !woolUsable && !aldiUsable) continue;
+    if (!colesUsable && !woolUsable) continue;
 
     splitTotal += line.lineTotal;
 
@@ -3899,16 +4059,12 @@ function buildCartOptimization(lineItems) {
       lineTotal: line.lineTotal,
       coles: line.coles,
       woolworths: line.woolworths,
-      aldi: line.aldi,
       colesLinePrice: line.colesLinePrice,
       woolworthsLinePrice: line.woolworthsLinePrice,
-      aldiLinePrice: line.aldiLinePrice,
       colesSingleStorePrice: line.colesSingleStorePrice,
       woolworthsSingleStorePrice: line.woolworthsSingleStorePrice,
-      aldiSingleStorePrice: line.aldiSingleStorePrice,
       colesIncomplete: line.colesIncomplete,
       woolIncomplete: line.woolIncomplete,
-      aldiIncomplete: line.aldiIncomplete,
       is_incomplete: line.is_incomplete,
     };
 
@@ -3916,24 +4072,20 @@ function buildCartOptimization(lineItems) {
       splitCart.coles.push(entry);
     } else if (line.chosenStore === 'Woolworths') {
       splitCart.woolworths.push(entry);
-    } else if (line.chosenStore === 'ALDI') {
-      splitCart.aldi.push(entry);
     }
   }
 
   colesOnlyTotal = Number(colesOnlyTotal.toFixed(2));
   woolworthsOnlyTotal = Number(woolworthsOnlyTotal.toFixed(2));
-  aldiOnlyTotal = Number(aldiOnlyTotal.toFixed(2));
   splitTotal = Number(splitTotal.toFixed(2));
 
-  const totals = { colesOnlyTotal, woolworthsOnlyTotal, aldiOnlyTotal, splitTotal };
+  const totals = { colesOnlyTotal, woolworthsOnlyTotal, splitTotal };
   const bestPick = pickBestCartStrategy(totals);
   const recommendation = buildCartRecommendationMessage(bestPick, totals);
 
   return {
     colesOnlyTotal,
     woolworthsOnlyTotal,
-    aldiOnlyTotal,
     splitTotal,
     splitCart,
     bestStrategy: bestPick.strategy,
@@ -3943,13 +4095,11 @@ function buildCartOptimization(lineItems) {
     is_incomplete: incompleteWarnings.length > 0,
     colesOnlyIncomplete: incompleteWarnings.some((w) => w.store === 'Coles'),
     woolworthsOnlyIncomplete: incompleteWarnings.some((w) => w.store === 'Woolworths'),
-    aldiOnlyIncomplete: incompleteWarnings.some((w) => w.store === 'ALDI'),
     incompleteWarnings,
     recommendation,
     savings: recommendation,
     savingsVsColes: recommendation.savingsVsColes,
     savingsVsWoolworths: recommendation.savingsVsWoolworths,
-    savingsVsAldi: recommendation.savingsVsAldi,
     unresolved,
   };
 }
@@ -3961,7 +4111,7 @@ const PRICE_COMPARE_EPS = 0.01;
  * Prefer one-store when totals tie within PRICE_COMPARE_EPS.
  */
 function pickBestCartStrategy(totals) {
-  const { colesOnlyTotal, woolworthsOnlyTotal, aldiOnlyTotal, splitTotal } = totals;
+  const { colesOnlyTotal, woolworthsOnlyTotal, splitTotal } = totals;
   const candidates = [];
 
   if (colesOnlyTotal > 0) {
@@ -3973,9 +4123,6 @@ function pickBestCartStrategy(totals) {
       store: 'Woolworths',
       total: woolworthsOnlyTotal,
     });
-  }
-  if (aldiOnlyTotal > 0) {
-    candidates.push({ strategy: 'aldi_only', store: 'ALDI', total: aldiOnlyTotal });
   }
   if (splitTotal > 0) {
     candidates.push({ strategy: 'split', store: 'Split', total: splitTotal });
@@ -3995,9 +4142,9 @@ function pickBestCartStrategy(totals) {
   return candidates[0];
 }
 
-/** Savings message for the winning cart strategy (3 supermarkets). */
+/** Savings message for the winning cart strategy (Coles & Woolworths). */
 function buildCartRecommendationMessage(bestPick, totals) {
-  const { colesOnlyTotal, woolworthsOnlyTotal, aldiOnlyTotal, splitTotal } = totals;
+  const { colesOnlyTotal, woolworthsOnlyTotal, splitTotal } = totals;
   const empty = {
     message: '',
     amount: 0,
@@ -4005,7 +4152,6 @@ function buildCartRecommendationMessage(bestPick, totals) {
     comparedTo: null,
     savingsVsColes: { amount: 0, percent: 0 },
     savingsVsWoolworths: { amount: 0, percent: 0 },
-    savingsVsAldi: { amount: 0, percent: 0 },
   };
 
   if (!bestPick?.strategy || bestPick.strategy === 'none') return empty;
@@ -4013,7 +4159,6 @@ function buildCartRecommendationMessage(bestPick, totals) {
   const singleStoreBaselines = [
     { store: 'Coles', total: colesOnlyTotal },
     { store: 'Woolworths', total: woolworthsOnlyTotal },
-    { store: 'ALDI', total: aldiOnlyTotal },
   ].filter((row) => row.total > 0);
 
   const maxSingle = singleStoreBaselines.reduce(
@@ -4038,14 +4183,13 @@ function buildCartRecommendationMessage(bestPick, totals) {
     return {
       message:
         amount > 0
-          ? `💡 Best for your wallet: split across Coles, Woolworths & ALDI and save $${amount.toFixed(2)} (${percent}%) vs buying everything at ${maxSingle.store}.`
+          ? `💡 Best for your wallet: split across Coles & Woolworths and save $${amount.toFixed(2)} (${percent}%) vs buying everything at ${maxSingle.store}.`
           : '✨ Split cart matches the cheapest single-store total — any one store works!',
       amount,
       percent,
       comparedTo: maxSingle.store,
       savingsVsColes: savingsBlock(colesOnlyTotal, 'Coles'),
       savingsVsWoolworths: savingsBlock(woolworthsOnlyTotal, 'Woolworths'),
-      savingsVsAldi: savingsBlock(aldiOnlyTotal, 'ALDI'),
     };
   }
 
@@ -4065,7 +4209,6 @@ function buildCartRecommendationMessage(bestPick, totals) {
       comparedTo: runner.store,
       savingsVsColes: savingsBlock(colesOnlyTotal, 'Coles'),
       savingsVsWoolworths: savingsBlock(woolworthsOnlyTotal, 'Woolworths'),
-      savingsVsAldi: savingsBlock(aldiOnlyTotal, 'ALDI'),
     };
   }
 
@@ -4076,7 +4219,6 @@ function buildCartRecommendationMessage(bestPick, totals) {
     comparedTo: null,
     savingsVsColes: savingsBlock(colesOnlyTotal, 'Coles'),
     savingsVsWoolworths: savingsBlock(woolworthsOnlyTotal, 'Woolworths'),
-    savingsVsAldi: savingsBlock(aldiOnlyTotal, 'ALDI'),
   };
 }
 
@@ -4342,32 +4484,6 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
   const apiTimeout = fast ? COMPARE_API_TIMEOUT_MS : API_TIMEOUT_MS;
   const maxRetries = fast ? COMPARE_API_MAX_RETRIES : API_MAX_RETRIES;
 
-  // ALDI — public catalog API (no RapidAPI / store-locator); same MongoDB cache key pattern.
-  if (supermarket === 'ALDI') {
-    const cached = await tryReadApiCache('ALDI', query, location);
-    if (cached != null) {
-      console.log(`  💾 ALDI cache hit: "${query}" @ ${buildLocationSegment(location)}`);
-      return cached;
-    }
-
-    try {
-      const rawList = await fetchAldiSearchRawList(query, RESULT_LIMIT, {
-        timeoutMs: fast ? 10000 : undefined,
-      });
-      scheduleWriteApiCache('ALDI', query, rawList, location);
-      return rawList;
-    } catch (error) {
-      console.warn('  ⚠ ALDI search failed (returning empty):', error?.message || error);
-      const stale = await tryReadStaleApiCache('ALDI', query, location);
-      if (stale?.length) {
-        console.log(`  💾 ALDI stale cache fallback: "${query}"`);
-        return stale;
-      }
-      logStoreSoftFail('ALDI', query, error, fast ? 10000 : API_TIMEOUT_MS);
-      return [];
-    }
-  }
-
   if (!RAPIDAPI_KEY) {
     throw new Error(
       'RAPIDAPI_KEY is not configured. Add it to .env or Vercel environment variables.'
@@ -4429,7 +4545,7 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
         console.log(`  💾 ${supermarket} stale cache fallback: "${query}"`);
         return stale;
       }
-      // Production: Woolworths lỗi (timeout / block IP / 5xx) → [] — Coles/ALDI vẫn hiển thị
+      // Production: Woolworths lỗi (timeout / block IP / 5xx) → [] — Coles vẫn hiển thị
       if (shouldSoftFailStoreRawList(supermarket)) {
         logStoreSoftFail(supermarket, query, error, apiTimeout);
         return [];
@@ -4471,17 +4587,16 @@ async function fetchWoolworths(keyword, listItem = null) {
 
 /**
  * Lỗi riêng từng siêu thị — chỉ set khi thật sự fail API.
- * Mảng rỗng [] (không có croissant ở ALDI) KHÔNG được gán message lỗi mặc định.
+ * Mảng rỗng [] KHÔNG được gán message lỗi mặc định.
  */
-function buildCompareStoreErrors(colesError, woolworthsError, aldiError) {
+function buildCompareStoreErrors(colesError, woolworthsError) {
   return {
     coles: colesError || null,
     woolworths: woolworthsError || null,
-    aldi: aldiError || null,
   };
 }
 
-/** Khi API fail hết — vẫn trả ma trận 1 hàng trống để UI Compare by item hiện đúng 3 cột. */
+/** Khi API fail hết — vẫn trả ma trận 1 hàng trống để UI Compare by item hiện đúng 2 cột. */
 function buildEmptyAlignedBlocksForKeywords(keywords) {
   return keywords.map((kw) => ({
     keyword: kw,
@@ -4490,14 +4605,13 @@ function buildEmptyAlignedBlocksForKeywords(keywords) {
         rowIndex: 0,
         woolworths: null,
         coles: null,
-        aldi: null,
         cheapestStore: null,
         rowSaving: 0,
         compareBasis: null,
       },
     ],
     similarPairCount: 0,
-    storeCounts: { woolworths: 0, coles: 0, aldi: 0 },
+    storeCounts: { woolworths: 0, coles: 0 },
   }));
 }
 
@@ -4505,7 +4619,7 @@ function buildEmptyAlignedBlocksForKeywords(keywords) {
 // 7. ENDPOINT CHÍNH: GET /api/compare?keyword=...
 // ============================================================
 /**
- * Gọi song song 3 siêu thị cho một từ khóa (Promise.allSettled).
+ * Gọi song song Coles + Woolworths cho một từ khóa (Promise.allSettled).
  * Trả về danh sách thô từng cửa hàng + lỗi (nếu có).
  */
 async function fetchAllStoresForKeyword(keyword) {
@@ -4546,28 +4660,15 @@ async function fetchAllStoresForKeyword(keyword) {
     }
   };
 
-  const safeFetchAldi = async () => {
-    try {
-      const result = await fetchStoreProducts('ALDI', keyword, searchListItem, fastOpts);
-      return { items: result.items || [], error: null };
-    } catch (error) {
-      logStoreSoftFail('ALDI', keyword, error, COMPARE_API_TIMEOUT_MS);
-      return { items: [], error: null };
-    }
-  };
-
-  const [colesSettled, woolSettled, aldiSettled] = await Promise.allSettled([
+  const [colesSettled, woolSettled] = await Promise.allSettled([
     safeFetchColes(),
     safeFetchWoolworths(),
-    safeFetchAldi(),
   ]);
 
   let colesItems = [];
   let woolworthsItems = [];
-  let aldiItems = [];
   let colesError = null;
   let woolworthsError = null;
-  let aldiError = null;
 
   if (colesSettled.status === 'fulfilled') {
     colesItems = colesSettled.value.items;
@@ -4585,28 +4686,18 @@ async function fetchAllStoresForKeyword(keyword) {
     woolworthsError = formatStoreError('Woolworths', woolSettled.reason);
   }
 
-  if (aldiSettled.status === 'fulfilled') {
-    aldiItems = aldiSettled.value.items;
-    aldiError = aldiSettled.value.error;
-    console.log(`  ALDI ("${keyword}"): ${aldiItems.length} products`);
-  } else {
-    aldiError = formatStoreError('ALDI', aldiSettled.reason);
-  }
-
   return {
     keyword,
     searchListItem,
     colesItems,
     woolworthsItems,
-    aldiItems,
     colesError,
     woolworthsError,
-    aldiError,
   };
 }
 
 /**
- * Gọi song song cả 3 API; response gồm alignedRows (mỗi hàng = một từ khóa)
+ * Gọi song song Coles + Woolworths; response gồm alignedRows (mỗi hàng = một từ khóa)
  * và items (danh sách phẳng, tương thích client cũ).
  */
 app.get('/api/compare', async (req, res) => {
@@ -4627,7 +4718,7 @@ app.get('/api/compare', async (req, res) => {
     return res.status(503).json({
       error:
         'RAPIDAPI_KEY is not configured. Add it to .env (local) or Vercel environment variables.',
-      storeErrors: { coles: null, woolworths: null, aldi: null },
+      storeErrors: { coles: null, woolworths: null },
     });
   }
 
@@ -4642,8 +4733,7 @@ app.get('/api/compare', async (req, res) => {
     console.error('  ❌ Compare route timeout:', routeErr.message);
     const storeErrors = buildCompareStoreErrors(
       `Coles search timed out. ${routeErr.message}`,
-      `Woolworths search timed out. ${routeErr.message}`,
-      `ALDI search timed out. ${routeErr.message}`
+      `Woolworths search timed out. ${routeErr.message}`
     );
     return res.status(504).json({
       error:
@@ -4659,10 +4749,8 @@ app.get('/api/compare', async (req, res) => {
 
   let colesItems = [];
   let woolworthsItems = [];
-  let aldiItems = [];
   let colesError = null;
   let woolworthsError = null;
-  let aldiError = null;
   const alignedRows = [];
 
   for (const block of perKeyword) {
@@ -4672,29 +4760,26 @@ app.get('/api/compare', async (req, res) => {
       block.woolworthsItems,
       RESULT_LIMIT * 3
     );
-    aldiItems = mergeProductLists(aldiItems, block.aldiItems, RESULT_LIMIT * 3);
 
     if (block.colesError) colesError = block.colesError;
     if (block.woolworthsError) woolworthsError = block.woolworthsError;
-    if (block.aldiError) aldiError = block.aldiError;
 
     alignedRows.push(
       buildAlignedCompareMatrix(
         block.keyword,
         block.searchListItem,
         block.woolworthsItems,
-        block.colesItems,
-        block.aldiItems
+        block.colesItems
       )
     );
   }
 
   const hasAnySlot = alignedRows.some((block) =>
-    block.matrixRows?.some((row) => row.woolworths || row.coles || row.aldi)
+    block.matrixRows?.some((row) => row.woolworths || row.coles)
   );
 
   if (!hasAnySlot) {
-    const storeErrors = buildCompareStoreErrors(colesError, woolworthsError, aldiError);
+    const storeErrors = buildCompareStoreErrors(colesError, woolworthsError);
     return res.json({
       items: [],
       alignedRows: buildEmptyAlignedBlocksForKeywords(keywords),
@@ -4703,13 +4788,13 @@ app.get('/api/compare', async (req, res) => {
       similarPairs: [],
       storeErrors,
       error:
-        colesError || woolworthsError || aldiError
+        colesError || woolworthsError
           ? 'One or more stores could not be reached. Details are shown per store below.'
           : 'No products found. Check API keys, network, or try another keyword.',
     });
   }
 
-  const combined = [...colesItems, ...woolworthsItems, ...aldiItems].sort(
+  const combined = [...colesItems, ...woolworthsItems].sort(
     (a, b) => a.price - b.price
   );
   const similarPairs = buildSimilarPairs(woolworthsItems, colesItems);
@@ -4728,7 +4813,7 @@ app.get('/api/compare', async (req, res) => {
     searchKeyword: keywords[0] || keyword,
     searchKeywords: keywords,
     similarPairs,
-    storeErrors: buildCompareStoreErrors(colesError, woolworthsError, aldiError),
+    storeErrors: buildCompareStoreErrors(colesError, woolworthsError),
   });
 });
 
@@ -4770,10 +4855,9 @@ app.get('/api/compare/barcode', async (req, res) => {
     }
   };
 
-  const [colesSettled, woolSettled, aldiSettled] = await Promise.allSettled([
+  const [colesSettled, woolSettled] = await Promise.allSettled([
     safeFetchRaw('Coles'),
     safeFetchRaw('Woolworths'),
-    safeFetchRaw('ALDI'),
   ]);
 
   const colesResult =
@@ -4784,31 +4868,24 @@ app.get('/api/compare/barcode', async (req, res) => {
     woolSettled.status === 'fulfilled'
       ? woolSettled.value
       : { product: null, error: formatStoreError('Woolworths', woolSettled.reason) };
-  const aldiResult =
-    aldiSettled.status === 'fulfilled'
-      ? aldiSettled.value
-      : { product: null, error: formatStoreError('ALDI', aldiSettled.reason) };
 
   const colesItem = colesResult.product;
   const woolItem = woolResult.product;
-  const aldiItem = aldiResult.product;
 
-  if (!colesItem && !woolItem && !aldiItem) {
+  if (!colesItem && !woolItem) {
     return res.status(404).json({
-      error: 'No product found with this barcode at Coles, Woolworths, or ALDI.',
+      error: 'No product found with this barcode at Coles or Woolworths.',
       scannedBarcode: barcode,
       storeErrors: {
         coles: colesResult.error,
         woolworths: woolResult.error,
-        aldi: aldiResult.error,
       },
     });
   }
 
   const colesItems = colesItem ? [colesItem] : [];
   const woolworthsItems = woolItem ? [woolItem] : [];
-  const aldiItems = aldiItem ? [aldiItem] : [];
-  const combined = [...colesItems, ...woolworthsItems, ...aldiItems];
+  const combined = [...colesItems, ...woolworthsItems];
 
   const directPair = buildDirectComparePair(woolItem, colesItem);
   const similarPairs = directPair
@@ -4816,11 +4893,11 @@ app.get('/api/compare/barcode', async (req, res) => {
     : buildSimilarPairs(woolworthsItems, colesItems);
 
   console.log(
-    `  ✅ Barcode hit | Coles: ${colesItem ? 'yes' : 'no'} | WW: ${woolItem ? 'yes' : 'no'} | ALDI: ${aldiItem ? 'yes' : 'no'}\n`
+    `  ✅ Barcode hit | Coles: ${colesItem ? 'yes' : 'no'} | WW: ${woolItem ? 'yes' : 'no'}\n`
   );
 
   const alignedRows = [
-    buildAlignedCompareMatrixFromProducts(barcode, woolItem, colesItem, aldiItem),
+    buildAlignedCompareMatrixFromProducts(barcode, woolItem, colesItem),
   ];
 
   res.json({
@@ -4833,7 +4910,6 @@ app.get('/api/compare/barcode', async (req, res) => {
     storeErrors: {
       coles: colesResult.error,
       woolworths: woolResult.error,
-      aldi: aldiResult.error,
     },
   });
 });
@@ -4890,7 +4966,7 @@ app.post('/api/analyze-prompt', async (req, res) => {
   const optimization = buildCartOptimization(lineResults);
 
   console.log(
-    `  ✅ Split $${optimization.splitTotal} | Coles $${optimization.colesOnlyTotal} | WW $${optimization.woolworthsOnlyTotal} | ALDI $${optimization.aldiOnlyTotal}\n`
+    `  ✅ Split $${optimization.splitTotal} | Coles $${optimization.colesOnlyTotal} | WW $${optimization.woolworthsOnlyTotal}\n`
   );
 
   res.json({
@@ -5082,3 +5158,11 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 module.exports = app;
+module.exports.__matchingTest__ = {
+  nameSuggestsProcessedNotCoreIngredient,
+  searchIntentSuggestsRawIngredient,
+  nameSuggestsProcessedPreparedFood,
+  pickBestProductMatch,
+  filterProductsForSearchIntent,
+  getProductComparablePricePerKg,
+};

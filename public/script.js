@@ -312,7 +312,7 @@ function extractUnitPricePerKg(product) {
 }
 
 /**
- * Compare unit/pack prices across two or more products (Coles / Woolworths / ALDI).
+ * Compare unit/pack prices across two or more products (Coles / Woolworths).
  * @param {object[]} products
  * @returns {{ saving: number, cheaperStore: string|null, compareBasis?: string }}
  */
@@ -416,7 +416,6 @@ function buildPriceBlockWithSaving(item, colesProduct, woolProduct) {
 const COLES_SEARCH_BASE = 'https://www.coles.com.au/search?q=';
 /** URL tìm kiếm công khai chuẩn Woolworths AU — phải có /products (không dùng /shop/search?). */
 const WOOLWORTHS_SEARCH_BASE = 'https://www.woolworths.com.au/shop/search/products?searchTerm=';
-const ALDI_SEARCH_BASE = 'https://www.aldi.com.au/results?q=';
 
 /**
  * Search term for store websites: barcode first, then product name, then cart line keyword.
@@ -437,10 +436,6 @@ function buildWoolworthsSearchUrl(query) {
   return `${WOOLWORTHS_SEARCH_BASE}${encodeURIComponent(query)}`;
 }
 
-function buildAldiSearchUrl(query) {
-  return `${ALDI_SEARCH_BASE}${encodeURIComponent(query)}`;
-}
-
 /** Resolve href for image/name links: ưu tiên url sản phẩm từ API, fallback search chính thức. */
 function resolveStoreSearchUrl(item, fallbackKeyword = '') {
   const direct = String(item?.url || '').trim();
@@ -452,7 +447,6 @@ function resolveStoreSearchUrl(item, fallbackKeyword = '') {
   const query = getStoreSearchQuery(item, fallbackKeyword);
   if (query && store === 'Coles') return buildColesSearchUrl(query);
   if (query && store === 'Woolworths') return buildWoolworthsSearchUrl(query);
-  if (query && store === 'ALDI') return buildAldiSearchUrl(query);
   return '';
 }
 
@@ -479,16 +473,6 @@ function calcLineSavingForCartEntry(entry) {
       packWeightKg: entry.colesPackKg,
       pricePerKg: entry.colesPricePerKg,
       unit_price_text: entry.colesUnitText,
-    });
-  }
-  if (compareStoreVisibility.aldi !== false && entry.aldiPrice != null) {
-    products.push({
-      supermarket: 'ALDI',
-      price: entry.aldiPrice,
-      packShelfPrice: entry.aldiPrice,
-      packWeightKg: entry.aldiPackKg,
-      pricePerKg: entry.aldiPricePerKg,
-      unit_price_text: entry.aldiUnitText,
     });
   }
   if (products.length >= 2) {
@@ -1097,7 +1081,6 @@ async function runCompareSearch({ keyword, barcode }) {
 
   const wooliesCont = document.getElementById('woolworths-results');
   const colesCont = document.getElementById('coles-results');
-  const aldiCont = document.getElementById('aldi-results');
   const alignedSection = document.getElementById('aligned-compare-section');
   const alignedRowsEl = document.getElementById('aligned-compare-rows');
   const summarySection = document.getElementById('summary-section');
@@ -1113,7 +1096,6 @@ async function runCompareSearch({ keyword, barcode }) {
   if (alignedSection) showRevealSection(alignedSection);
   if (wooliesCont) wooliesCont.innerHTML = '<p class="loading">Loading...</p>';
   if (colesCont) colesCont.innerHTML = '<p class="loading">Loading...</p>';
-  if (aldiCont) aldiCont.innerHTML = '<p class="loading">Loading...</p>';
   hideRevealSection(summarySection);
   removeBarcodeScanBanner();
 
@@ -1141,7 +1123,6 @@ async function runCompareSearch({ keyword, barcode }) {
     }
     if (wooliesCont) wooliesCont.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
     if (colesCont) colesCont.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
-    if (aldiCont) aldiCont.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
   } finally {
     searchBtn.disabled = false;
   }
@@ -1166,7 +1147,6 @@ function displayCompareResults(data, options = {}) {
   if (alignedRows.length) {
     compareStoreVisibility.woolworths = true;
     compareStoreVisibility.coles = true;
-    compareStoreVisibility.aldi = true;
 
     const keywordBlocks = normalizeAlignedKeywordBlocks(alignedRows);
     initCompareStoreFilterToolbar();
@@ -1183,17 +1163,12 @@ function displayCompareResults(data, options = {}) {
   } else {
     const wooliesCont = document.getElementById('woolworths-results');
     const colesCont = document.getElementById('coles-results');
-    const aldiCont = document.getElementById('aldi-results');
     const woolworths = items.filter((item) => item.supermarket === 'Woolworths');
     const coles = items.filter((item) => item.supermarket === 'Coles');
-    const aldi = items.filter((item) => item.supermarket === 'ALDI');
 
-    renderSummary(summaryText, summarySection, woolworths, coles, aldi, data);
+    renderSummary(summaryText, summarySection, woolworths, coles, data);
     renderStoreResults(wooliesCont, woolworths, 'Woolworths', data.storeErrors?.woolworths);
     renderStoreResults(colesCont, coles, 'Coles', data.storeErrors?.coles);
-    if (aldiCont) {
-      renderStoreResults(aldiCont, aldi, 'ALDI', data.storeErrors?.aldi);
-    }
     hideRevealSection(alignedSection);
     hideCompareStoreFilterToolbar();
     if (browseGrid) browseGrid.classList.remove('hidden');
@@ -1215,23 +1190,20 @@ function normalizeAlignedKeywordBlocks(alignedRows) {
           rowIndex: 0,
           woolworths: block.woolworths || null,
           coles: block.coles || null,
-          aldi: block.aldi || null,
         },
       ],
       storeCounts: block.storeCounts || {
         woolworths: block.woolworths ? 1 : 0,
         coles: block.coles ? 1 : 0,
-        aldi: block.aldi ? 1 : 0,
       },
     };
   });
 }
 
-/** Trạng thái bật/tắt cột siêu thị trên bảng Compare (mặc định cả 3 bật). */
+/** Trạng thái bật/tắt cột siêu thị trên bảng Compare (mặc định cả 2 bật). */
 const compareStoreVisibility = {
   woolworths: true,
   coles: true,
-  aldi: true,
 };
 
 function isCompareStoreVisible(storeKey) {
@@ -1284,11 +1256,11 @@ function applyCompareStoreColumnVisibility() {
   const container = document.getElementById('aligned-compare-rows');
   if (!container) return;
 
-  const visibleCount = ['woolworths', 'coles', 'aldi'].filter((k) =>
+  const visibleCount = ['woolworths', 'coles'].filter((k) =>
     isCompareStoreVisible(k)
   ).length;
 
-  container.classList.remove('cols-1', 'cols-2', 'cols-3');
+  container.classList.remove('cols-1', 'cols-2');
   container.classList.add(`cols-${Math.max(visibleCount, 1)}`);
 
   container.querySelectorAll('.aligned-store-cell[data-store]').forEach((cell) => {
@@ -1318,7 +1290,6 @@ function getMatrixRowPeers(matrixRow, visibility = compareStoreVisibility) {
   const slots = [
     { key: 'woolworths', product: matrixRow.woolworths },
     { key: 'coles', product: matrixRow.coles },
-    { key: 'aldi', product: matrixRow.aldi },
   ];
   return slots
     .filter(({ key, product }) => visibility[key] !== false && product && Number(product.price) > 0)
@@ -1348,10 +1319,10 @@ function renderSummaryFromAlignedKeywordBlocks(el, section, keywordBlocks, data 
     const peers = getMatrixRowPeers(topRow, compareStoreVisibility);
     if (!peers.length) {
       const err = data.storeErrors || {};
-      const visibleStores = ['woolworths', 'coles', 'aldi'].filter((k) =>
+      const visibleStores = ['woolworths', 'coles'].filter((k) =>
         isCompareStoreVisible(k)
       );
-      const storeLabel = { woolworths: 'Woolworths', coles: 'Coles', aldi: 'ALDI' };
+      const storeLabel = { woolworths: 'Woolworths', coles: 'Coles' };
       const apiDown = visibleStores.filter((k) => err[k] && /timed out|unable to load/i.test(err[k]));
       if (apiDown.length >= 2) {
         text += `<strong>${escapeHtml(block.keyword)}</strong>: could not reach ${apiDown.length} store(s) — check network, MongoDB, and API keys. `;
@@ -1405,13 +1376,11 @@ function buildRowMultiStoreSavingBadge(rowPeers, storeForThisSide) {
 const ALIGNED_STORE_META = [
   { key: 'woolworths', name: 'Woolworths', labelClass: 'woolies' },
   { key: 'coles', name: 'Coles', labelClass: 'coles' },
-  { key: 'aldi', name: 'ALDI', labelClass: 'aldi' },
 ];
 
 const ALIGNED_STORE_ERROR_KEY = {
   woolworths: 'woolworths',
   coles: 'coles',
-  aldi: 'aldi',
 };
 
 /**
@@ -1419,7 +1388,7 @@ const ALIGNED_STORE_ERROR_KEY = {
  */
 function renderPartialCompareBanner(container, data) {
   const err = data?.storeErrors || {};
-  const labels = { woolworths: 'Woolworths', coles: 'Coles', aldi: 'ALDI' };
+  const labels = { woolworths: 'Woolworths', coles: 'Coles' };
   const failed = Object.keys(labels).filter(
     (k) => err[k] && /timed out|unable to load|temporarily unavailable/i.test(err[k])
   );
@@ -1427,7 +1396,7 @@ function renderPartialCompareBanner(container, data) {
 
   const hasProducts = (data.items || []).length > 0;
   const hasMatrixProducts = (data.alignedRows || []).some((block) =>
-    block.matrixRows?.some((row) => row.woolworths || row.coles || row.aldi)
+    block.matrixRows?.some((row) => row.woolworths || row.coles)
   );
   if (!hasProducts && !hasMatrixProducts) return;
 
@@ -1438,7 +1407,7 @@ function renderPartialCompareBanner(container, data) {
 }
 
 /**
- * Ma trận nhiều hàng ngang: mỗi từ khóa → N hàng (Top 1, Top 2, …) × 3 cột siêu thị.
+ * Ma trận nhiều hàng ngang: mỗi từ khóa → N hàng (Top 1, Top 2, …) × 2 cột siêu thị.
  */
 function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) {
   if (!container) return;
@@ -1477,11 +1446,11 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
         block.similarPairCount != null
           ? `${block.similarPairCount} matched pair${block.similarPairCount === 1 ? '' : 's'}`
           : '';
-      const totalProducts = counts.woolworths + counts.coles + counts.aldi;
+      const totalProducts = counts.woolworths + counts.coles;
       hint.textContent =
         totalProducts === 0
           ? 'No products loaded — see messages per store below'
-          : `${matrixRows.length} row${matrixRows.length === 1 ? '' : 's'}${pairNote ? ` · ${pairNote}` : ''} · Woolworths ${counts.woolworths} · Coles ${counts.coles} · ALDI ${counts.aldi}${block.orphanRowsCapped ? ' · showing top matches only' : ''}`;
+          : `${matrixRows.length} row${matrixRows.length === 1 ? '' : 's'}${pairNote ? ` · ${pairNote}` : ''} · Woolworths ${counts.woolworths} · Coles ${counts.coles}${block.orphanRowsCapped ? ' · showing top matches only' : ''}`;
       group.appendChild(heading);
       group.appendChild(hint);
     } else {
@@ -1496,7 +1465,6 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
       rowEl._storeErrors = {
         woolworths: data.storeErrors?.woolworths || '',
         coles: data.storeErrors?.coles || '',
-        aldi: data.storeErrors?.aldi || '',
       };
       rowEl.style.animationDelay = `${Math.min(globalRowIndex * 0.04, 0.5)}s`;
       globalRowIndex += 1;
@@ -1688,14 +1656,13 @@ function removeBarcodeScanBanner() {
   document.getElementById('barcode-scan-banner')?.remove();
 }
 
-function renderSummary(el, section, woolworths, coles, aldi = [], data = {}) {
+function renderSummary(el, section, woolworths, coles, data = {}) {
   const mins = [
     { store: 'Coles', price: coles.length ? Math.min(...coles.map((p) => p.price)) : null },
     {
       store: 'Woolworths',
       price: woolworths.length ? Math.min(...woolworths.map((p) => p.price)) : null,
     },
-    { store: 'ALDI', price: aldi.length ? Math.min(...aldi.map((p) => p.price)) : null },
   ].filter((row) => row.price != null);
 
   if (!mins.length) {
@@ -2262,7 +2229,6 @@ function renderAiShoppingResults(data) {
   const bestStrategy = opt.bestStrategy || 'split';
   const colesHighlight = bestStrategy === 'coles_only';
   const woolHighlight = bestStrategy === 'woolworths_only';
-  const aldiHighlight = bestStrategy === 'aldi_only';
   const splitHighlight = bestStrategy === 'split';
 
   document.getElementById('ai-totals-grid').innerHTML = `
@@ -2275,11 +2241,6 @@ function renderAiShoppingResults(data) {
       <h3>All at Woolworths${woolHighlight ? ' (best)' : ''}</h3>
       <p class="amount">$${(opt.woolworthsOnlyTotal || 0).toFixed(2)}</p>
       ${opt.woolworthsOnlyIncomplete ? '<p class="cart-incomplete-note">Includes estimated prices for missing items (see item details).</p>' : ''}
-    </div>
-    <div class="ai-total-card${aldiHighlight ? ' highlight' : ''}">
-      <h3>All at ALDI${aldiHighlight ? ' (best)' : ''}</h3>
-      <p class="amount">$${(opt.aldiOnlyTotal || 0).toFixed(2)}</p>
-      ${opt.aldiOnlyIncomplete ? '<p class="cart-incomplete-note">Includes estimated prices for missing items (see item details).</p>' : ''}
     </div>
     <div class="ai-total-card${splitHighlight ? ' highlight' : ''}">
       <h3>Split cart${splitHighlight ? ' (best)' : ''}</h3>
@@ -2332,11 +2293,6 @@ function lineItemsToStoreEntries(lineItems, store) {
       lineTotal = line.colesSingleStorePrice ?? line.colesLinePrice ?? 0;
       incomplete = line.colesIncomplete;
       incompleteNote = line.colesIncompleteNote;
-    } else if (store === 'ALDI') {
-      product = line.aldi;
-      lineTotal = line.aldiSingleStorePrice ?? line.aldiLinePrice ?? 0;
-      incomplete = line.aldiIncomplete;
-      incompleteNote = line.aldiIncompleteNote;
     } else {
       product = line.woolworths;
       lineTotal = line.woolworthsSingleStorePrice ?? line.woolworthsLinePrice ?? 0;
@@ -2388,19 +2344,6 @@ function renderAiSplitCart(splitCart, bestStrategy = 'split', lineItems = []) {
     return;
   }
 
-  if (bestStrategy === 'aldi_only') {
-    const entries = lineItemsToStoreEntries(lineItems, 'ALDI');
-    container.innerHTML = `
-      <h3>🛒 ALDI all the way</h3>
-      <p class="ai-single-store-hint">Your whole list is cheapest at ALDI — one trip, no split needed!</p>
-      <div class="ai-split-col aldi">
-        <h3>All items at ALDI</h3>
-        ${renderSplitItems(entries, 'ALDI')}
-      </div>
-    `;
-    return;
-  }
-
   container.innerHTML = `
     <h3>Where to shop (split cart)</h3>
     <div class="ai-split-columns">
@@ -2411,10 +2354,6 @@ function renderAiSplitCart(splitCart, bestStrategy = 'split', lineItems = []) {
       <div class="ai-split-col woolies">
         <h3>Buy at Woolworths</h3>
         ${renderSplitItems(splitCart.woolworths, 'Woolworths')}
-      </div>
-      <div class="ai-split-col aldi">
-        <h3>Buy at ALDI</h3>
-        ${renderSplitItems(splitCart.aldi, 'ALDI')}
       </div>
     </div>
   `;
@@ -2463,11 +2402,9 @@ function renderAiLineItems(lineItems) {
       line.chosenStore === 'Coles' ? 'pick' : line.coles ? '' : 'missing';
     const woolClass =
       line.chosenStore === 'Woolworths' ? 'pick' : line.woolworths ? '' : 'missing';
-    const aldiClass = line.chosenStore === 'ALDI' ? 'pick' : line.aldi ? '' : 'missing';
 
     const colesUsable = line.coles && Number(line.colesLinePrice) > 0;
     const woolUsable = line.woolworths && Number(line.woolworthsLinePrice) > 0;
-    const aldiUsable = line.aldi && Number(line.aldiLinePrice) > 0;
 
     const storeCell = (store, product, usable, linePrice, singlePrice, incomplete, incompleteNote, cssClass) => {
       if (usable) {
@@ -2517,16 +2454,6 @@ function renderAiLineItems(lineItems) {
           line.woolIncomplete,
           line.woolIncompleteNote,
           woolClass
-        )}
-        ${storeCell(
-          'ALDI',
-          line.aldi,
-          aldiUsable,
-          line.aldiLinePrice,
-          line.aldiSingleStorePrice ?? 0,
-          line.aldiIncomplete,
-          line.aldiIncompleteNote,
-          aldiClass
         )}
       </div>
     `;
