@@ -27,7 +27,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=18">
+    <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
     <div class="app-container">
@@ -89,7 +89,12 @@
                 />
             </a>
             <div class="search-bar">
-                <input type="text" id="itemInput" placeholder="What are you looking for? (e.g. Apples)">
+                <input
+                    type="text"
+                    id="itemInput"
+                    placeholder="Search for 'Jasmine rice', 'oyster blade beefsteak'..."
+                    data-rotating-placeholder="true"
+                >
                 <div class="search-bar-actions">
                     <button type="button" onclick="searchProducts()" id="searchBtn">Compare Prices</button>
                     <div class="scanner-action">
@@ -178,7 +183,7 @@
                     id="aiListInput"
                     class="ai-list-textarea"
                     rows="2"
-                    placeholder="e.g. 2 kg rice, 1 kg belly pork, 2L milk, 6 eggs"
+                    placeholder="Enter specific items (e.g., 'Jasmine rice 5kg', 'free range eggs 12pk') for precise matching..."
                 ></textarea>
                 <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List by AI</button>
             </div>
@@ -334,7 +339,7 @@
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=55"></script>
+    <script src="/script.js?v=56"></script>
     <script src="/barcode-scanner.js?v=4"></script>
     <script src="/app.js?v=6"></script>
 

@@ -1532,6 +1532,15 @@ input[type="text"] {
     font-size: 1rem;
 }
 
+/* Compare bar: smooth fade when rotating Australian grocery placeholder hints */
+#itemInput::placeholder {
+    transition: opacity 0.32s var(--ease-smooth, ease);
+}
+
+#itemInput.search-input--placeholder-fade::placeholder {
+    opacity: 0;
+}
+
 input[type="text"]:focus,
 .ai-list-textarea:focus {
     outline: none;

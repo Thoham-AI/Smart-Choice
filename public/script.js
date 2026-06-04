@@ -1123,7 +1123,10 @@ function setSearchResultsVisible(hasResults) {
 /** Reset compare UI — clear input, hide results, restore idle home layout. */
 function resetCompareView() {
   const itemInput = document.getElementById('itemInput');
-  if (itemInput) itemInput.value = '';
+  if (itemInput) {
+    itemInput.value = '';
+    restartRotatingComparePlaceholder();
+  }
 
   removeBarcodeScanBanner();
   setSearchResultsVisible(false);
@@ -1947,6 +1950,95 @@ function escapeHtml(text) {
 document.getElementById('brand-home-link')?.addEventListener('click', handleBrandHomeClick);
 document.getElementById('brand-hero-link')?.addEventListener('click', handleBrandHomeClick);
 
+// --- Compare search: rotating placeholder hints (Australian grocery examples) ---
+
+/** Static fallback on first paint, on focus, and when rotation is paused. */
+const COMPARE_SEARCH_PLACEHOLDER_STATIC =
+  "Search for 'Jasmine rice', 'oyster blade beefsteak'...";
+
+/** Rotates when the compare input is empty and unfocused. */
+const COMPARE_SEARCH_PLACEHOLDER_HINTS = [
+  "Search for 'Jasmine rice'...",
+  "Search for 'oyster blade beefsteak'...",
+  "Search for 'Devondale full cream milk'...",
+];
+
+const ROTATING_PLACEHOLDER_INTERVAL_MS = 4000;
+const ROTATING_PLACEHOLDER_FADE_MS = 320;
+
+/** Restarts the compare placeholder cycle after resetCompareView clears the input. */
+let restartRotatingComparePlaceholder = () => {};
+
+function initRotatingComparePlaceholder() {
+  const input = document.getElementById('itemInput');
+  if (!input || input.dataset.rotatingPlaceholder !== 'true') return;
+
+  input.placeholder = COMPARE_SEARCH_PLACEHOLDER_STATIC;
+
+  let hintIndex = 0;
+  let timerId = null;
+  let fading = false;
+
+  const canRotate = () =>
+    document.activeElement !== input && !input.value.trim() && !input.disabled;
+
+  const scheduleNext = () => {
+    clearTimeout(timerId);
+    if (!canRotate()) return;
+    timerId = window.setTimeout(rotateOnce, ROTATING_PLACEHOLDER_INTERVAL_MS);
+  };
+
+  const rotateOnce = () => {
+    if (!canRotate() || fading) {
+      scheduleNext();
+      return;
+    }
+
+    fading = true;
+    input.classList.add('search-input--placeholder-fade');
+
+    window.setTimeout(() => {
+      hintIndex = (hintIndex + 1) % COMPARE_SEARCH_PLACEHOLDER_HINTS.length;
+      input.placeholder = COMPARE_SEARCH_PLACEHOLDER_HINTS[hintIndex];
+      input.classList.remove('search-input--placeholder-fade');
+      fading = false;
+      scheduleNext();
+    }, ROTATING_PLACEHOLDER_FADE_MS);
+  };
+
+  restartRotatingComparePlaceholder = () => {
+    clearTimeout(timerId);
+    fading = false;
+    input.classList.remove('search-input--placeholder-fade');
+    if (canRotate()) {
+      input.placeholder = COMPARE_SEARCH_PLACEHOLDER_STATIC;
+      scheduleNext();
+    }
+  };
+
+  input.addEventListener('focus', () => {
+    clearTimeout(timerId);
+    input.classList.remove('search-input--placeholder-fade');
+    input.placeholder = COMPARE_SEARCH_PLACEHOLDER_STATIC;
+  });
+
+  input.addEventListener('blur', () => {
+    if (!input.value.trim()) scheduleNext();
+  });
+
+  input.addEventListener('input', () => {
+    clearTimeout(timerId);
+    if (input.value.trim()) {
+      input.classList.remove('search-input--placeholder-fade');
+      return;
+    }
+    input.placeholder = COMPARE_SEARCH_PLACEHOLDER_STATIC;
+    scheduleNext();
+  });
+
+  scheduleNext();
+}
+
 document.getElementById('itemInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') searchProducts();
 });
@@ -1971,6 +2063,7 @@ document.getElementById('clear-history-btn')?.addEventListener('click', () => {
 
 initTheme();
 initLocationConsentUi();
+initRotatingComparePlaceholder();
 initMainTabs();
 updateWatchlistTabBadge();
 renderRecentSearches();
