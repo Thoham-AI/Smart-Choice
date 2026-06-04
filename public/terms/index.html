@@ -28,7 +28,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="/style.css?v=17">
+    <link rel="stylesheet" href="/style.css?v=21">
 </head>
 <body class="terms-page-body">
     <div class="app-container terms-page-container">
@@ -48,16 +48,30 @@
                 />
                 <span class="brand-logo-text">SmartChoice</span>
             </a>
-            <button
-                type="button"
-                id="theme-toggle"
-                class="theme-toggle"
-                aria-label="Toggle dark mode"
-                title="Toggle dark mode"
-            >
-                <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
-                <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
-            </button>
+            <div class="site-navbar-actions">
+                <a
+                    href="https://tally.so/r/lbzBAp"
+                    id="navbar-feedback-link"
+                    class="navbar-feedback-link"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Send feedback — opens in a new tab"
+                    title="Feedback"
+                >
+                    <span class="navbar-feedback-icon" aria-hidden="true">💬</span>
+                    <span class="navbar-feedback-label">Feedback</span>
+                </a>
+                <button
+                    type="button"
+                    id="theme-toggle"
+                    class="theme-toggle"
+                    aria-label="Toggle dark mode"
+                    title="Toggle dark mode"
+                >
+                    <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
+                    <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
+                </button>
+            </div>
         </header>
 
         <main class="terms-content" aria-labelledby="terms-title">
@@ -122,16 +136,6 @@
             </p>
         </footer>
     </div>
-
-    <a
-        href="https://tally.so/r/your-form-id"
-        id="feedback-fab"
-        class="feedback-fab"
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label="Gửi góp ý — mở trong tab mới"
-        title="Feedback"
-    >💬 <span class="feedback-fab-text">Feedback</span></a>
 
     <script src="/app.js?v=6"></script>
     <script>

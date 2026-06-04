@@ -1148,7 +1148,6 @@ function resetCompareView() {
 
   compareStoreVisibility.woolworths = true;
   compareStoreVisibility.coles = true;
-  compareStoreVisibility.aldi = true;
   lastSimilarPairs = [];
 }
 
@@ -1310,23 +1309,20 @@ function normalizeAlignedKeywordBlocks(alignedRows) {
           rowIndex: 0,
           woolworths: block.woolworths || null,
           coles: block.coles || null,
-          aldi: block.aldi || null,
         },
       ],
       storeCounts: block.storeCounts || {
         woolworths: block.woolworths ? 1 : 0,
         coles: block.coles ? 1 : 0,
-        aldi: block.aldi ? 1 : 0,
       },
     };
   });
 }
 
-/** Trạng thái bật/tắt cột siêu thị trên bảng Compare (mặc định cả 3 bật). */
+/** Trạng thái bật/tắt cột siêu thị trên bảng Compare (mặc định cả 2 bật). */
 const compareStoreVisibility = {
   woolworths: true,
   coles: true,
-  aldi: true,
 };
 
 function isCompareStoreVisible(storeKey) {
@@ -1379,7 +1375,7 @@ function applyCompareStoreColumnVisibility() {
   const container = document.getElementById('aligned-compare-rows');
   if (!container) return;
 
-  const visibleCount = ['woolworths', 'coles', 'aldi'].filter((k) =>
+  const visibleCount = ['woolworths', 'coles'].filter((k) =>
     isCompareStoreVisible(k)
   ).length;
 
@@ -1413,7 +1409,6 @@ function getMatrixRowPeers(matrixRow, visibility = compareStoreVisibility) {
   const slots = [
     { key: 'woolworths', product: matrixRow.woolworths },
     { key: 'coles', product: matrixRow.coles },
-    { key: 'aldi', product: matrixRow.aldi },
   ];
   return slots
     .filter(({ key, product }) => visibility[key] !== false && product && Number(product.price) > 0)
@@ -1443,10 +1438,10 @@ function renderSummaryFromAlignedKeywordBlocks(el, section, keywordBlocks, data 
     const peers = getMatrixRowPeers(topRow, compareStoreVisibility);
     if (!peers.length) {
       const err = data.storeErrors || {};
-      const visibleStores = ['woolworths', 'coles', 'aldi'].filter((k) =>
+      const visibleStores = ['woolworths', 'coles'].filter((k) =>
         isCompareStoreVisible(k)
       );
-      const storeLabel = { woolworths: 'Woolworths', coles: 'Coles', aldi: 'ALDI' };
+      const storeLabel = { woolworths: 'Woolworths', coles: 'Coles' };
       const apiDown = visibleStores.filter((k) => err[k] && /timed out|unable to load/i.test(err[k]));
       if (apiDown.length >= 2) {
         text += `<strong>${escapeHtml(block.keyword)}</strong>: could not reach ${apiDown.length} store(s) — check network, MongoDB, and API keys. `;
@@ -1500,13 +1495,11 @@ function buildRowMultiStoreSavingBadge(rowPeers, storeForThisSide) {
 const ALIGNED_STORE_META = [
   { key: 'woolworths', name: 'Woolworths', labelClass: 'woolies' },
   { key: 'coles', name: 'Coles', labelClass: 'coles' },
-  { key: 'aldi', name: 'ALDI', labelClass: 'aldi' },
 ];
 
 const ALIGNED_STORE_ERROR_KEY = {
   woolworths: 'woolworths',
   coles: 'coles',
-  aldi: 'aldi',
 };
 
 /**
@@ -1514,7 +1507,7 @@ const ALIGNED_STORE_ERROR_KEY = {
  */
 function renderPartialCompareBanner(container, data) {
   const err = data?.storeErrors || {};
-  const labels = { woolworths: 'Woolworths', coles: 'Coles', aldi: 'ALDI' };
+  const labels = { woolworths: 'Woolworths', coles: 'Coles' };
   const failed = Object.keys(labels).filter(
     (k) => err[k] && /timed out|unable to load|temporarily unavailable/i.test(err[k])
   );
@@ -1522,7 +1515,7 @@ function renderPartialCompareBanner(container, data) {
 
   const hasProducts = (data.items || []).length > 0;
   const hasMatrixProducts = (data.alignedRows || []).some((block) =>
-    block.matrixRows?.some((row) => row.woolworths || row.coles || row.aldi)
+    block.matrixRows?.some((row) => row.woolworths || row.coles)
   );
   if (!hasProducts && !hasMatrixProducts) return;
 
@@ -1572,11 +1565,11 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
         block.similarPairCount != null
           ? `${block.similarPairCount} matched pair${block.similarPairCount === 1 ? '' : 's'}`
           : '';
-      const totalProducts = counts.woolworths + counts.coles + (counts.aldi || 0);
+      const totalProducts = counts.woolworths + counts.coles;
       hint.textContent =
         totalProducts === 0
           ? 'No products loaded — see messages per store below'
-          : `${matrixRows.length} row${matrixRows.length === 1 ? '' : 's'}${pairNote ? ` · ${pairNote}` : ''} · Woolworths ${counts.woolworths} · Coles ${counts.coles} · ALDI ${counts.aldi || 0}${block.orphanRowsCapped ? ' · showing top matches only' : ''}`;
+          : `${matrixRows.length} row${matrixRows.length === 1 ? '' : 's'}${pairNote ? ` · ${pairNote}` : ''} · Woolworths ${counts.woolworths} · Coles ${counts.coles}${block.orphanRowsCapped ? ' · showing top matches only' : ''}`;
       group.appendChild(heading);
       group.appendChild(hint);
     } else {
@@ -1591,7 +1584,6 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
       rowEl._storeErrors = {
         woolworths: data.storeErrors?.woolworths || '',
         coles: data.storeErrors?.coles || '',
-        aldi: data.storeErrors?.aldi || '',
       };
       rowEl.style.animationDelay = `${Math.min(globalRowIndex * 0.04, 0.5)}s`;
       globalRowIndex += 1;

@@ -23,7 +23,7 @@ const PUBLIC_DIR = path.join(__dirname, '../public');
 const INDEX_HTML_PATH = path.join(PUBLIC_DIR, 'index.html');
 
 /** Link Tally mặc định (placeholder) — thay bằng FEEDBACK_TALLY_URL trong .env */
-const FEEDBACK_TALLY_URL_FALLBACK = 'https://tally.so/r/your-form-id';
+const FEEDBACK_TALLY_URL_FALLBACK = 'https://tally.so/r/lbzBAp';
 
 let cachedHomeHtml = null;
 let cachedHomeHtmlTallyUrl = null;
@@ -40,8 +40,15 @@ function getFeedbackTallyUrl() {
 }
 
 /**
- * Chuỗi HTML nút Feedback nhúng trong Backend (href từ getFeedbackTallyUrl).
- * Giữ target="_blank" và rel="noopener noreferrer" — mở tab mới, không rời trang so sánh giá.
+ * Đồng bộ mọi link Tally trong HTML (navbar + legacy FAB nếu còn).
+ */
+function syncTallyUrlsInHtml(html) {
+  const tallyUrl = getFeedbackTallyUrl();
+  return html.replace(/https:\/\/tally\.so\/r\/[a-zA-Z0-9]+/g, tallyUrl);
+}
+
+/**
+ * Chuỗi HTML nút Feedback nổi (legacy FAB — giữ để inject nếu HTML cũ còn FAB).
  */
 function buildFeedbackFabHtml() {
   const tallyUrl = getFeedbackTallyUrl().replace(/"/g, '&quot;');
@@ -74,8 +81,7 @@ function buildHomePageHtml() {
     buildFeedbackFabHtml()
   );
 
-  // Đồng bộ mọi href Tally còn sót trong file nguồn
-  html = html.replace(/https:\/\/tally\.so\/r\/your-form-id/g, tallyUrl);
+  html = syncTallyUrlsInHtml(html);
 
   cachedHomeHtml = html;
   cachedHomeHtmlTallyUrl = tallyUrl;
@@ -86,13 +92,11 @@ function buildHomePageHtml() {
  * Chèn URL Tally đúng vào trang terms (nút feedback-fab).
  */
 function injectFeedbackLinkIntoHtml(html) {
-  const tallyUrl = getFeedbackTallyUrl();
   let out = html.replace(
     /<!--\s*Góp ý[\s\S]*?<a[\s\S]*?id="feedback-fab"[\s\S]*?<\/a>/i,
     buildFeedbackFabHtml()
   );
-  out = out.replace(/https:\/\/tally\.so\/r\/your-form-id/g, tallyUrl);
-  return out;
+  return syncTallyUrlsInHtml(out);
 }
 
 // ============================================================
@@ -1727,7 +1731,107 @@ const PROCESSED_FOOD_NEGATIVE_PATTERNS = [
   /\bflavou?r\b/,
 ];
 
-/** Quy tắc khớp sản phẩm (AI Analyzer + thuật toán local). */
+/**
+ * Bước 1 — Lọc từ khóa rác: đồ gia dụng / quà tặng lẫn vào kết quả thực phẩm.
+ * Chỉ giữ nếu người dùng cố ý tìm (từ khóa cũng chứa mug, cup, …).
+ */
+const SEARCH_NOISE_NEGATIVE_KEYWORDS = [
+  'mug',
+  'cup',
+  'plate',
+  'bowl',
+  'toy',
+  'book',
+  'equipment',
+  'apron',
+  'tote',
+  'storage',
+  'container',
+  'rack',
+  'tray',
+  'candle',
+  'gift',
+  'merchandise',
+  'homewares',
+  'kitchenware',
+];
+
+/** Bước 2 — Modifier phân loại: cùng modifier trên 2 sản phẩm → +2 điểm/ghép. */
+const SMART_MATCH_CATEGORY_MODIFIERS = [
+  'free range',
+  'sliced',
+  'diced',
+  'mince',
+  'roast',
+  'boneless',
+  'smoked',
+  'cooked',
+  'bites',
+  'fillet',
+  'fillets',
+  'thigh',
+  'breast',
+  'wing',
+  'rump',
+  'leg',
+  'whole',
+  'skinless',
+  'trim',
+  'lean',
+];
+
+/** Gợi ý thịt/nguyên liệu sống (chưa chế biến). */
+const SMART_MATCH_RAW_MEAT_HINTS = [
+  'sliced',
+  'diced',
+  'mince',
+  'roast',
+  'boneless',
+  'fillet',
+  'fillets',
+  'thigh',
+  'breast',
+  'rump',
+  'leg',
+  'whole',
+  'skinless',
+  'trim',
+  'raw',
+  'fresh',
+];
+
+/** Gợi ý đồ chín / tẩm ướp / BBQ — không ghép với thịt sống. */
+const SMART_MATCH_COOKED_PREPARED_HINTS = [
+  'bbq',
+  'barbecue',
+  'cooked',
+  'marinated',
+  'honey',
+  'bites',
+  'smoked',
+  'crumbed',
+  'battered',
+  'grilled',
+  'roasted',
+  'heat and eat',
+  'ready to eat',
+  'pre cooked',
+  'precooked',
+  'marinade',
+  'glazed',
+  'teriyaki',
+  'schnitzel',
+  'nugget',
+  'burger',
+  'sausage',
+  'meatball',
+  'pattie',
+  'patty',
+];
+
+/** Điểm tối thiểu để chấp nhận ghép cặp (tránh ghép bừa khi điểm âm). */
+const SMART_MATCH_MIN_PAIR_SCORE = 0.35;
+
 const PRODUCT_MATCHING_RULES = `You are a strict grocery price analyzer. When matching products between Coles and Woolworths, you MUST match raw ingredients with raw ingredients. Never match raw meat (e.g., chicken thigh fillets) with processed food (e.g., chicken burgers or nuggets), even if they share keywords. Always prioritize the alternative item that offers the lowest price per kilogram ($/kg) and matches the exact form of the user's intent.`;
 
 function searchIntentSuggestsProcessedFood(keyword, listItem = {}) {
@@ -3377,7 +3481,8 @@ function parseCompareKeywords(raw) {
  * Hàng i của ma trận UI = phần tử thứ i trong mảng này — không lấy món khác loại đắp chỗ.
  */
 function buildStoreOptionsForKeyword(products, keyword, listItem = {}) {
-  const candidates = filterProductsForSearchIntent(products, keyword, listItem);
+  const noiseFiltered = filterSearchNoiseProducts(products, keyword);
+  const candidates = filterProductsForSearchIntent(noiseFiltered, keyword, listItem);
   if (!candidates.length) return [];
 
   const scored = candidates
@@ -3405,6 +3510,178 @@ function productStableKey(product) {
   return `${product.supermarket || ''}:${product.name || ''}:${product.price ?? ''}`;
 }
 
+/**
+ * Bước 1 — Loại sản phẩm chứa từ rác (mug, cup, …) khi query không nhắc tới chúng.
+ */
+function filterSearchNoiseProducts(products, keyword) {
+  if (!Array.isArray(products) || !products.length) return [];
+
+  const kwNorm = normalizeNameForMatch(stripWeightFromText(keyword || ''));
+
+  return products.filter((product) => {
+    const nameNorm = normalizeNameForMatch(product?.name || '');
+    if (!nameNorm) return false;
+
+    for (const noiseTerm of SEARCH_NOISE_NEGATIVE_KEYWORDS) {
+      if (searchKeywordAllowsNoiseTerm(kwNorm, noiseTerm)) continue;
+      if (haystackHasWord(nameNorm, noiseTerm)) return false;
+    }
+    return true;
+  });
+}
+
+function searchKeywordAllowsNoiseTerm(keywordNorm, noiseTerm) {
+  if (!keywordNorm || !noiseTerm) return false;
+  if (haystackHasWord(keywordNorm, noiseTerm)) return true;
+  if (noiseTerm.includes(' ') && keywordNorm.includes(noiseTerm)) return true;
+  return false;
+}
+
+/** Trích modifier phân loại có trong tên sản phẩm. */
+function extractSmartMatchModifiers(nameNorm) {
+  if (!nameNorm) return [];
+  const found = [];
+  for (const mod of SMART_MATCH_CATEGORY_MODIFIERS) {
+    if (mod.includes(' ')) {
+      if (nameNorm.includes(mod)) found.push(mod);
+    } else if (haystackHasWord(nameNorm, mod)) {
+      found.push(mod);
+    }
+  }
+  return found;
+}
+
+function nameNormHasAnyHint(nameNorm, hints) {
+  return hints.some((hint) =>
+    hint.includes(' ') ? nameNorm.includes(hint) : haystackHasWord(nameNorm, hint)
+  );
+}
+
+/** Chênh lệch $/kg hoặc pack price — trong 20% thì +1 điểm. */
+function smartMatchPriceWithinTwentyPercent(productA, productB) {
+  const priceA = getProductComparablePricePerKg(productA);
+  const priceB = getProductComparablePricePerKg(productB);
+  if (!Number.isFinite(priceA) || !Number.isFinite(priceB) || priceA <= 0 || priceB <= 0) {
+    return false;
+  }
+  const ratio = Math.min(priceA, priceB) / Math.max(priceA, priceB);
+  return ratio >= 0.8;
+}
+
+/**
+ * Bước 2 — Chấm điểm ghép 1 cặp Woolworths ↔ Coles (càng cao càng giống bản chất).
+ * +2/modifier chung · -3 raw↔cooked · +1 giá gần nhau · cộng thêm độ tương đồng tên.
+ */
+function scoreSmartMatchPair(woolProduct, colesProduct) {
+  const woolName = resolveProductName(woolProduct);
+  const colesName = resolveProductName(colesProduct);
+  const woolNorm = normalizeNameForMatch(woolName);
+  const colesNorm = normalizeNameForMatch(colesName);
+  if (!woolNorm || !colesNorm) return -999;
+
+  if (!areProductCategoriesCompatible(woolProduct, colesProduct)) return -999;
+
+  let score = 0;
+
+  const woolMods = extractSmartMatchModifiers(woolNorm);
+  const colesMods = extractSmartMatchModifiers(colesNorm);
+  for (const mod of woolMods) {
+    if (colesMods.includes(mod)) score += 2;
+  }
+
+  const woolRaw = nameNormHasAnyHint(woolNorm, SMART_MATCH_RAW_MEAT_HINTS);
+  const woolCooked =
+    nameNormHasAnyHint(woolNorm, SMART_MATCH_COOKED_PREPARED_HINTS) ||
+    nameSuggestsProcessedPreparedFood(woolName);
+  const colesRaw = nameNormHasAnyHint(colesNorm, SMART_MATCH_RAW_MEAT_HINTS);
+  const colesCooked =
+    nameNormHasAnyHint(colesNorm, SMART_MATCH_COOKED_PREPARED_HINTS) ||
+    nameSuggestsProcessedPreparedFood(colesName);
+
+  if ((woolRaw && !woolCooked && colesCooked) || (colesRaw && !colesCooked && woolCooked)) {
+    score -= 3;
+  } else if (woolCooked !== colesCooked && (woolCooked || colesCooked)) {
+    score -= 3;
+  }
+
+  if (smartMatchPriceWithinTwentyPercent(woolProduct, colesProduct)) {
+    score += 1;
+  }
+
+  score += stringSimilarity.compareTwoStrings(woolNorm, colesNorm) * 0.75;
+
+  if (freshFoodCorePhraseMatch(woolName, colesName)) {
+    score += 1.5;
+  }
+
+  const sizeStatus = checkSizeCompatibility(woolName, colesName);
+  if (sizeStatus === 'conflict') score -= 4;
+  else if (sizeStatus === 'ok') score += 0.5;
+
+  if (!varietiesCompatible(woolName, colesName)) score -= 2;
+
+  return score;
+}
+
+/**
+ * Bước 2+3 — Ghép cặp thông minh: mỗi WW chọn Coles điểm cao nhất, Coles đã ghép bị loại.
+ * Sản phẩm thừa → trả về unmatched* để xếp hàng cuối (fallback).
+ */
+function buildSmartComparePairs(woolworthsOptions, colesOptions) {
+  const pairs = [];
+  const usedWoolKeys = new Set();
+  const usedColesIndexes = new Set();
+
+  if (!woolworthsOptions.length || !colesOptions.length) {
+    return {
+      pairs,
+      unmatchedWool: woolworthsOptions.slice(),
+      unmatchedColes: colesOptions.slice(),
+    };
+  }
+
+  for (const woolItem of woolworthsOptions) {
+    let bestIdx = -1;
+    let bestScore = -Infinity;
+    let bestPricePerKg = Number.POSITIVE_INFINITY;
+
+    colesOptions.forEach((colesItem, idx) => {
+      if (usedColesIndexes.has(idx)) return;
+
+      const score = scoreSmartMatchPair(woolItem, colesItem);
+      if (score < SMART_MATCH_MIN_PAIR_SCORE) return;
+
+      const ppkg = getProductComparablePricePerKg(colesItem);
+      if (
+        score > bestScore ||
+        (score === bestScore && ppkg < bestPricePerKg)
+      ) {
+        bestScore = score;
+        bestIdx = idx;
+        bestPricePerKg = ppkg;
+      }
+    });
+
+    if (bestIdx < 0) continue;
+
+    usedColesIndexes.add(bestIdx);
+    usedWoolKeys.add(productStableKey(woolItem));
+
+    pairs.push({
+      woolworths: woolItem,
+      coles: colesOptions[bestIdx],
+      matchScore: Number(bestScore.toFixed(2)),
+    });
+  }
+
+  const unmatchedWool = woolworthsOptions.filter(
+    (item) => !usedWoolKeys.has(productStableKey(item))
+  );
+  const unmatchedColes = colesOptions.filter((_, idx) => !usedColesIndexes.has(idx));
+
+  return { pairs, unmatchedWool, unmatchedColes };
+}
+
 /** Gắn so sánh giá rẻ nhất cho một hàng ma trận (chỉ các ô có sản phẩm). */
 function attachMatrixRowComparison(matrixRow) {
   const available = [matrixRow.woolworths, matrixRow.coles].filter(Boolean);
@@ -3426,8 +3703,8 @@ function attachMatrixRowComparison(matrixRow) {
 }
 
 /**
- * Ma trận so sánh (alignedRows / synchronizedRows):
- * - Hàng gốc = cặp Similar Coles ↔ Woolworths + món WW/Coles chưa ghép
+ * Ma trận 2 cột Coles ↔ Woolworths — Smart Matching:
+ * 1) Lọc rác (mug, cup, …) · 2) Chấm điểm ghép cặp · 3) Hàng thừa xuống cuối.
  */
 function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems) {
   const item = listItem || buildListItemForKeywordSearch(keyword);
@@ -3436,50 +3713,40 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems) {
   const woolworthsOptions = buildStoreOptionsForKeyword(woolItems, item.keyword, item);
   const colesOptions = buildStoreOptionsForKeyword(colesItems, item.keyword, item);
 
-  const similarPairs = buildSimilarPairs(woolworthsOptions, colesOptions);
-  const usedWoolKeys = new Set();
-  const usedColesKeys = new Set();
+  const { pairs, unmatchedWool, unmatchedColes } = buildSmartComparePairs(
+    woolworthsOptions,
+    colesOptions
+  );
+
   const matrixRows = [];
 
-  for (const pair of similarPairs) {
+  for (const pair of pairs) {
     if (matrixRows.length >= RESULT_LIMIT) break;
-
-    usedWoolKeys.add(productStableKey(pair.woolworths));
-    usedColesKeys.add(productStableKey(pair.coles));
-
     matrixRows.push(
       attachMatrixRowComparison({
         rowIndex: matrixRows.length,
         woolworths: pair.woolworths,
         coles: pair.coles,
-        matchType: 'similar_pair',
-        similarity: pair.similarity,
+        matchType: 'smart_pair',
+        similarity: pair.matchScore,
       })
     );
   }
 
-  for (const wool of woolworthsOptions) {
+  for (const woolworths of unmatchedWool) {
     if (matrixRows.length >= RESULT_LIMIT) break;
-    const key = productStableKey(wool);
-    if (usedWoolKeys.has(key)) continue;
-    usedWoolKeys.add(key);
-
     matrixRows.push(
       attachMatrixRowComparison({
         rowIndex: matrixRows.length,
-        woolworths: wool,
+        woolworths,
         coles: null,
         matchType: 'woolworths_only',
       })
     );
   }
 
-  for (const coles of colesOptions) {
+  for (const coles of unmatchedColes) {
     if (matrixRows.length >= RESULT_LIMIT) break;
-    const key = productStableKey(coles);
-    if (usedColesKeys.has(key)) continue;
-    usedColesKeys.add(key);
-
     matrixRows.push(
       attachMatrixRowComparison({
         rowIndex: matrixRows.length,
@@ -3490,11 +3757,15 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems) {
     );
   }
 
+  const similarPairCount = pairs.length;
+  const totalPossible =
+    woolworthsOptions.length + colesOptions.length - similarPairCount;
+
   return {
     keyword: kw,
     matrixRows,
-    similarPairCount: similarPairs.length,
-    orphanRowsCapped: false,
+    similarPairCount,
+    orphanRowsCapped: totalPossible > RESULT_LIMIT,
     storeCounts: {
       woolworths: woolworthsOptions.length,
       coles: colesOptions.length,
@@ -4863,7 +5134,19 @@ app.get('/api/compare', async (req, res) => {
   const combined = [...colesItems, ...woolworthsItems].sort(
     (a, b) => a.price - b.price
   );
-  const similarPairs = buildSimilarPairs(woolworthsItems, colesItems);
+  const similarPairs = alignedRows.flatMap((block) =>
+    (block.matrixRows || [])
+      .filter((row) => row.woolworths && row.coles)
+      .map((row) => ({
+        woolworths: row.woolworths,
+        coles: row.coles,
+        cheaper: row.cheapestStore,
+        saving: row.rowSaving,
+        compareBasis: row.compareBasis,
+        similarity: row.similarity ?? 0.35,
+        matchType: row.matchType || 'ranked_pair',
+      }))
+  );
 
   const matrixRowTotal = alignedRows.reduce(
     (sum, block) => sum + (block.matrixRows?.length || 0),
@@ -5230,5 +5513,9 @@ module.exports.__matchingTest__ = {
   nameSuggestsProcessedPreparedFood,
   pickBestProductMatch,
   filterProductsForSearchIntent,
+  filterSearchNoiseProducts,
+  scoreSmartMatchPair,
+  buildSmartComparePairs,
+  buildAlignedCompareMatrix,
   getProductComparablePricePerKg,
 };

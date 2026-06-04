@@ -27,7 +27,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=19">
+    <link rel="stylesheet" href="style.css?v=21">
 </head>
 <body>
     <div class="app-container">
@@ -48,16 +48,31 @@
                 />
                 <span class="brand-logo-text">SmartChoice</span>
             </a>
-            <button
-                type="button"
-                id="theme-toggle"
-                class="theme-toggle"
-                aria-label="Toggle dark mode"
-                title="Toggle dark mode"
-            >
-                <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
-                <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
-            </button>
+            <!-- Góc phải header: Góp ý (Tally) + dark mode -->
+            <div class="site-navbar-actions">
+                <a
+                    href="https://tally.so/r/lbzBAp"
+                    id="navbar-feedback-link"
+                    class="navbar-feedback-link"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Send feedback — opens in a new tab"
+                    title="Feedback"
+                >
+                    <span class="navbar-feedback-icon" aria-hidden="true">💬</span>
+                    <span class="navbar-feedback-label">Feedback</span>
+                </a>
+                <button
+                    type="button"
+                    id="theme-toggle"
+                    class="theme-toggle"
+                    aria-label="Toggle dark mode"
+                    title="Toggle dark mode"
+                >
+                    <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
+                    <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
+                </button>
+            </div>
         </header>
 
         <p class="site-tagline">Real-time grocery price comparison</p>
@@ -251,13 +266,12 @@
 
         <section id="aligned-compare-section" class="aligned-compare-section hidden">
             <h2>Compare by item</h2>
-            <p class="aligned-compare-hint">Rows follow matched Coles ↔ Woolworths pairs. ALDI is matched by keyword and size. Empty dashed cells mean no match at that store.</p>
+            <p class="aligned-compare-hint">Mỗi hàng ghép sản phẩm Woolworths và Coles theo thứ tự liên quan nhất. Ô nét đứt = siêu thị đó hết món để ghép ở hàng cuối.</p>
             <div id="store-filter-toolbar" class="store-filter-toolbar hidden" role="group" aria-label="Show or hide store columns">
                 <button type="button" class="store-filter-btn woolies is-active" data-store="woolworths" aria-pressed="true">🟢 Woolworths</button>
                 <button type="button" class="store-filter-btn coles is-active" data-store="coles" aria-pressed="true">🔴 Coles</button>
-                <button type="button" class="store-filter-btn aldi is-active" data-store="aldi" aria-pressed="true">🔵 ALDI</button>
             </div>
-            <div id="aligned-compare-rows" class="aligned-compare-rows cols-3"></div>
+            <div id="aligned-compare-rows" class="aligned-compare-rows cols-2"></div>
         </section>
 
         <main class="comparison-grid comparison-grid--browse comparison-grid--two hidden">
@@ -324,22 +338,11 @@
         </footer>
     </div>
 
-    <!-- Nút Góp ý: href Tally cố định; Backend (api/index.js) cũng chèn lại khi res.send('/') -->
-    <a
-        href="https://tally.so/r/your-form-id"
-        id="feedback-fab"
-        class="feedback-fab"
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label="Gửi góp ý — mở trong tab mới"
-        title="Feedback"
-    >💬 <span class="feedback-fab-text">Feedback</span></a>
-
     <!-- Barcode scanner library (bundled locally under public/) -->
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=56"></script>
+    <script src="/script.js?v=57"></script>
     <script src="/barcode-scanner.js?v=4"></script>
     <script src="/app.js?v=6"></script>
 

@@ -23,7 +23,6 @@
     --error-text: #b91c1c;
     --ww-green: #008a00;
     --coles-red: #e01a22;
-    --aldi-blue: #00457c;
     --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
     --transition-smooth: 0.3s var(--ease-smooth);
 }
@@ -324,13 +323,78 @@ body.location-modal-open {
     transition: color var(--transition-smooth);
 }
 
-/* Dark / Light mode toggle — top-right of navbar */
+/* Nhóm nút góc phải header — Góp ý + dark mode */
+.site-navbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+/* Nút Góp ý Tally — ghost/outline, tinh tế, không lấn át ô tìm kiếm */
+.navbar-feedback-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--text-secondary);
+    text-decoration: none;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    transition:
+        color var(--transition-smooth),
+        border-color var(--transition-smooth),
+        background var(--transition-smooth);
+}
+
+.navbar-feedback-link:hover,
+.navbar-feedback-link:focus-visible {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-ai-soft);
+}
+
+.navbar-feedback-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.navbar-feedback-icon {
+    font-size: 1.05rem;
+    line-height: 1;
+}
+
+.navbar-feedback-label {
+    white-space: nowrap;
+}
+
+/* Mobile: header chật → chỉ icon 💬 */
+@media (max-width: 479px) {
+    .navbar-feedback-link {
+        padding: 8px 10px;
+        min-width: 40px;
+        min-height: 40px;
+    }
+
+    .navbar-feedback-label {
+        display: none;
+    }
+}
+
+/* Dark / Light mode toggle — cạnh nút Góp ý */
 .theme-toggle {
     position: relative;
     top: auto;
     right: auto;
     flex-shrink: 0;
-    margin-left: auto;
+    margin-left: 0;
     width: 44px;
     height: 44px;
     padding: 0;
@@ -1768,16 +1832,11 @@ button:hover {
     color: var(--coles-red);
 }
 
-.store-filter-btn.aldi.is-active {
-    border-color: var(--aldi-blue);
-    color: var(--aldi-blue);
-}
-
 .store-filter-btn:not(.is-active):hover {
     opacity: 0.75;
 }
 
-/* Grid co giãn theo số cột đang bật */
+/* Lưới 2 cột Coles ↔ Woolworths (50%–50%); co giãn khi ẩn 1 cột */
 .aligned-row-stores {
     display: grid;
     gap: 14px;
@@ -1789,10 +1848,6 @@ button:hover {
 
 #aligned-compare-rows.cols-2 .aligned-row-stores {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-#aligned-compare-rows.cols-3 .aligned-row-stores {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .aligned-store-cell.store-col-hidden {
@@ -1877,7 +1932,6 @@ button:hover {
 
 .aligned-store-cell .store-label.woolies { color: var(--ww-green); }
 .aligned-store-cell .store-label.coles { color: var(--coles-red); }
-.aligned-store-cell .store-label.aldi { color: var(--aldi-blue); }
 
 .aligned-store-cell.unavailable {
     background: #f3f4f6;
