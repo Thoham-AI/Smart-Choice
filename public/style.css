@@ -980,7 +980,7 @@ body {
 
 .ai-totals-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 12px;
     margin-bottom: 16px;
 }
@@ -1098,9 +1098,13 @@ body {
 
 .ai-split-columns {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 16px;
     margin-bottom: 20px;
+}
+
+.ai-split-col.aldi h3 {
+    color: #002a54;
 }
 
 .ai-split-col h3 {
@@ -1223,7 +1227,7 @@ body {
 
 .ai-line-stores {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
     font-size: 0.88rem;
 }
@@ -1429,6 +1433,10 @@ button:hover {
     gap: 20px;
 }
 
+.comparison-grid--three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .store-column {
     background: var(--bg-surface);
     border-radius: 12px;
@@ -1440,6 +1448,11 @@ button:hover {
 
 .woolies-brand h2 { color: var(--ww-green); border-bottom: 3px solid var(--ww-green); padding-bottom: 10px; }
 .coles-brand h2 { color: var(--coles-red); border-bottom: 3px solid var(--coles-red); padding-bottom: 10px; }
+.aldi-brand h2 {
+    color: #002a54;
+    border-bottom: 3px solid #ffc20e;
+    padding-bottom: 10px;
+}
 
 .product-card {
     border: 1px solid var(--border-color);
@@ -1576,6 +1589,232 @@ button:hover {
     margin-top: 10px;
 }
 
+/* Hàng ngang so sánh theo từ khóa (WW / Coles / ALDI) */
+.aligned-compare-section {
+    margin-bottom: 28px;
+}
+
+/* Thanh bật/tắt cột siêu thị */
+.store-filter-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 18px;
+    padding: 12px 14px;
+    background: var(--bg-surface-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+}
+
+.store-filter-toolbar.hidden {
+    display: none;
+}
+
+.store-filter-btn {
+    padding: 8px 16px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    background: #fff;
+    color: #6b7280;
+    opacity: 0.55;
+    transition: opacity 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.store-filter-btn.is-active {
+    opacity: 1;
+    box-shadow: var(--shadow-sm);
+}
+
+.store-filter-btn.woolies.is-active {
+    border-color: var(--ww-green);
+    color: var(--ww-green);
+}
+
+.store-filter-btn.coles.is-active {
+    border-color: var(--coles-red);
+    color: var(--coles-red);
+}
+
+.store-filter-btn.aldi.is-active {
+    border-color: #002a54;
+    color: #002a54;
+    background: #fff;
+}
+
+.store-filter-btn:not(.is-active):hover {
+    opacity: 0.75;
+}
+
+/* Grid co giãn theo số cột đang bật */
+.aligned-row-stores {
+    display: grid;
+    gap: 14px;
+}
+
+#aligned-compare-rows.cols-1 .aligned-row-stores {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+#aligned-compare-rows.cols-2 .aligned-row-stores {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#aligned-compare-rows.cols-3 .aligned-row-stores {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.aligned-store-cell.store-col-hidden {
+    display: none !important;
+}
+
+.compare-partial-banner {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    color: #92400e;
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+
+.aligned-compare-hint {
+    color: #6b7280;
+    font-size: 0.9rem;
+    margin: 0 0 16px;
+}
+
+.aligned-compare-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+.aligned-keyword-group {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.aligned-keyword-heading {
+    margin: 0;
+    font-size: 1.15rem;
+    color: var(--text-primary);
+}
+
+.aligned-keyword-count {
+    margin: -4px 0 8px;
+    font-size: 0.85rem;
+    color: #6b7280;
+}
+
+.aligned-compare-row {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 16px 16px 20px;
+    box-shadow: var(--shadow-sm);
+}
+
+.aligned-row-rank {
+    margin: 0 0 8px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #9ca3af;
+}
+
+.aligned-store-cell {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--bg-surface-muted);
+    min-height: 180px;
+    display: flex;
+    flex-direction: column;
+}
+
+.aligned-store-cell .store-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 10px;
+}
+
+.aligned-store-cell .store-label.woolies { color: var(--ww-green); }
+.aligned-store-cell .store-label.coles { color: var(--coles-red); }
+.aligned-store-cell .store-label.aldi { color: #002a54; }
+
+.aligned-store-cell.unavailable {
+    background: #f3f4f6;
+    border-style: dashed;
+    border-color: #d1d5db;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+}
+
+.aligned-store-cell.unavailable .unavailable-inner {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px 12px;
+    text-align: center;
+}
+
+.aligned-store-cell.unavailable--api {
+    background: #fef2f2;
+    border-color: #fecaca;
+}
+
+.aligned-store-cell .unavailable-label {
+    margin: 0;
+    color: #6b7280;
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+
+.aligned-store-cell .unavailable-error {
+    margin: 0;
+    color: #dc2626;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    font-weight: 500;
+    max-width: 100%;
+}
+
+.aligned-store-cell .unavailable-hint {
+    margin: 0;
+    color: #9ca3af;
+    font-size: 0.82rem;
+}
+
+.aligned-store-cell.product-card.cheapest {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35);
+}
+
+.aligned-price-area {
+    margin-top: 4px;
+}
+
+.aligned-saving-slot:empty {
+    display: none;
+}
+
+.aligned-cell-meta {
+    margin-top: auto;
+    padding-top: 10px;
+}
+
 .comparison-grid--browse.hidden {
     display: none;
 }
@@ -1601,6 +1840,10 @@ button:hover {
 
 .badge.woolies-win { background: #008a00; }
 .badge.coles-win { background: #e01a22; }
+.badge.aldi-win {
+    background: #002a54;
+    color: #ffc20e;
+}
 .badge.tie { background: #6b7280; }
 
 .save-text {
@@ -1983,7 +2226,9 @@ button:hover {
         grid-template-columns: 1fr;
     }
 
-    .comparison-grid {
+    .comparison-grid,
+    .comparison-grid--three,
+    .aligned-row-stores {
         grid-template-columns: 1fr;
     }
 
