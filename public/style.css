@@ -23,6 +23,7 @@
     --error-text: #b91c1c;
     --ww-green: #008a00;
     --coles-red: #e01a22;
+    --aldi-blue: #00457c;
     --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
     --transition-smooth: 0.3s var(--ease-smooth);
 }
@@ -73,40 +74,167 @@ body {
     margin-bottom: 8px;
 }
 
-/* Location consent (in-app) → browser Geolocation API only after "Share location" */
-.location-notice {
+/* Top navbar — compact brand mark + theme toggle */
+.site-navbar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto 4px;
+    padding: 4px 0 0;
+    text-align: left;
+}
+
+.site-tagline {
+    margin: 0 0 12px;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    transition: color var(--transition-smooth);
+}
+
+/* Brand logo — shared PNG asset, nav + hero sizes */
+.brand-logo-link,
+.brand-hero-link {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    color: inherit;
+    transition: opacity var(--transition-smooth), transform var(--transition-smooth);
+}
+
+.brand-logo-link:hover,
+.brand-logo-link:focus-visible,
+.brand-hero-link:hover,
+.brand-hero-link:focus-visible {
+    opacity: 0.88;
+    transform: translateY(-1px);
+}
+
+.brand-logo-link:focus-visible,
+.brand-hero-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 8px;
+}
+
+.brand-logo-text {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+}
+
+.brand-logo {
+    display: block;
+    height: auto;
+    flex-shrink: 0;
+}
+
+/* Navbar mark — ~38px tall */
+.brand-logo--nav {
+    height: 38px;
+    width: auto;
+}
+
+.brand-logo-link .brand-logo-text {
+    display: none;
+}
+
+@media (min-width: 480px) {
+    .brand-logo-link .brand-logo-text {
+        display: inline;
+    }
+}
+
+/* Hero mark — centered above search on idle home */
+.brand-hero-link {
+    justify-content: center;
+    margin: 8px auto 20px;
+    max-height: 120px;
+    overflow: hidden;
+    opacity: 1;
+    transform: scale(1);
+    transition:
+        opacity 0.35s var(--ease-smooth),
+        max-height 0.4s var(--ease-smooth),
+        margin 0.4s var(--ease-smooth),
+        transform 0.35s var(--ease-smooth);
+}
+
+.brand-logo--hero {
+    width: min(180px, 58vw);
+    max-width: 200px;
+    margin: 0 auto;
+}
+
+/* Hide hero logo once compare results are shown */
+.search-section--has-results .brand-hero-link {
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    opacity: 0;
+    transform: scale(0.92);
+    pointer-events: none;
+}
+
+.site-navbar--terms {
+    margin-bottom: 20px;
+}
+
+/* Location consent popup (in-app) → browser Geolocation API only after "Share location" */
+.location-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1990;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.location-modal.hidden {
+    display: none;
+}
+
+body.location-modal-open {
+    overflow: hidden;
+}
+
+.location-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+}
+
+.location-modal-content {
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    margin: 0 auto 16px;
-    max-width: 720px;
-    padding: 12px 14px;
+    width: min(420px, 100%);
+    padding: 18px 16px;
     text-align: left;
     background: var(--bg-surface);
     border: 1px solid var(--border-color);
-    border-radius: 12px;
-    box-shadow: var(--shadow-sm);
+    border-radius: 14px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
     transition: background-color var(--transition-smooth), border-color var(--transition-smooth);
 }
 
-.location-notice--dismissing {
+.location-modal--closing .location-modal-content {
     opacity: 0;
-    max-height: 0;
-    margin-top: 0 !important;
-    margin-bottom: 0 !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-    overflow: hidden;
-    pointer-events: none;
+    transform: scale(0.96);
     transition:
-        opacity 0.32s var(--ease-smooth),
-        max-height 0.38s var(--ease-smooth),
-        margin 0.38s var(--ease-smooth),
-        padding 0.38s var(--ease-smooth);
+        opacity 0.24s var(--ease-smooth),
+        transform 0.24s var(--ease-smooth);
 }
 
-.location-notice--dismissed {
-    display: none !important;
+.location-modal--closing .location-modal-backdrop {
+    opacity: 0;
+    transition: opacity 0.24s var(--ease-smooth);
 }
 
 .location-notice-icon {
@@ -196,11 +324,13 @@ body {
     transition: color var(--transition-smooth);
 }
 
-/* Dark / Light mode toggle – top-right of header */
+/* Dark / Light mode toggle — top-right of navbar */
 .theme-toggle {
-    position: absolute;
-    top: 0;
-    right: 0;
+    position: relative;
+    top: auto;
+    right: auto;
+    flex-shrink: 0;
+    margin-left: auto;
     width: 44px;
     height: 44px;
     padding: 0;
@@ -699,7 +829,7 @@ body {
 }
 
 .search-section {
-    margin: 30px 0;
+    margin: 16px 0 30px;
 }
 
 /* Recent searches */
@@ -1629,6 +1759,11 @@ button:hover {
     color: var(--coles-red);
 }
 
+.store-filter-btn.aldi.is-active {
+    border-color: var(--aldi-blue);
+    color: var(--aldi-blue);
+}
+
 .store-filter-btn:not(.is-active):hover {
     opacity: 0.75;
 }
@@ -1645,6 +1780,10 @@ button:hover {
 
 #aligned-compare-rows.cols-2 .aligned-row-stores {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#aligned-compare-rows.cols-3 .aligned-row-stores {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .aligned-store-cell.store-col-hidden {
@@ -1729,6 +1868,7 @@ button:hover {
 
 .aligned-store-cell .store-label.woolies { color: var(--ww-green); }
 .aligned-store-cell .store-label.coles { color: var(--coles-red); }
+.aligned-store-cell .store-label.aldi { color: var(--aldi-blue); }
 
 .aligned-store-cell.unavailable {
     background: #f3f4f6;

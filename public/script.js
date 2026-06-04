@@ -37,6 +37,15 @@ let userLocation = {
 /** True while navigator.geolocation.getCurrentPosition is in flight after consent. */
 let locationRequestInFlight = false;
 
+/** Resolves after the user completes the location popup (Share / Not now). */
+let locationConsentResume = null;
+
+/** Whether the location popup is currently visible. */
+let locationConsentModalOpen = false;
+
+/** Shared promise while the location popup is waiting for a choice. */
+let locationConsentPendingPromise = null;
+
 /** Tổng tiền tiết kiệm tích lũy trong giỏ (cộng dồn mỗi lần Add to cart) */
 let totalSaved = 0;
 
@@ -82,42 +91,98 @@ function saveLocationConsentChoice() {
 }
 
 /**
- * Remove the location banner from view after the user has chosen Share or Not now.
+ * Hide the location consent popup after the user has chosen Share or Not now.
  */
 function dismissLocationConsentBanner() {
-  const notice = document.getElementById('location-consent-notice');
-  if (!notice || notice.classList.contains('location-notice--dismissed')) return;
+  hideLocationConsentModal();
+}
 
-  notice.classList.add('location-notice--dismissing');
+function showLocationConsentModal() {
+  const modal = document.getElementById('location-consent-modal');
+  if (!modal || locationConsentModalOpen || userLocation.ready) return;
+
+  locationConsentModalOpen = true;
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('location-modal-open');
+  updateLocationNoticeUi();
+
+  const allowBtn = document.getElementById('location-allow-btn');
+  allowBtn?.focus();
+}
+
+function hideLocationConsentModal() {
+  const modal = document.getElementById('location-consent-modal');
+  if (!modal) return;
+
+  if (modal.classList.contains('hidden')) {
+    locationConsentModalOpen = false;
+    return;
+  }
+
+  modal.classList.add('location-modal--closing');
 
   const finish = () => {
-    notice.classList.add('location-notice--dismissed');
-    notice.hidden = true;
-    notice.setAttribute('aria-hidden', 'true');
+    modal.classList.remove('location-modal--closing');
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('location-modal-open');
+    locationConsentModalOpen = false;
   };
 
-  notice.addEventListener('transitionend', finish, { once: true });
-  window.setTimeout(finish, 450);
+  modal.addEventListener('transitionend', finish, { once: true });
+  window.setTimeout(finish, 280);
 }
 
 /**
- * Wire the location banner buttons. Does not touch the Geolocation API until the user agrees.
+ * Show the location popup on first price lookup; skip if the user already chose.
+ * @returns {Promise<void>}
+ */
+function ensureLocationConsent() {
+  if (userLocation.ready) return Promise.resolve();
+  if (locationConsentPendingPromise) return locationConsentPendingPromise;
+
+  locationConsentPendingPromise = new Promise((resolve) => {
+    locationConsentResume = () => {
+      locationConsentPendingPromise = null;
+      resolve();
+    };
+    showLocationConsentModal();
+  });
+
+  return locationConsentPendingPromise;
+}
+
+function resumeLocationConsentFlow() {
+  const resume = locationConsentResume;
+  locationConsentResume = null;
+  resume?.();
+}
+
+/**
+ * Wire the location popup buttons. Does not touch the Geolocation API until the user agrees.
  */
 function initLocationConsentUi() {
   const saved = loadSavedLocationConsent();
   if (saved) {
     userLocation = saved;
-    dismissLocationConsentBanner();
-    return;
+    hideLocationConsentModal();
   }
 
   const allowBtn = document.getElementById('location-allow-btn');
   const declineBtn = document.getElementById('location-decline-btn');
+  const backdrop = document.getElementById('location-modal-backdrop');
 
   allowBtn?.addEventListener('click', onLocationConsentAllow);
   declineBtn?.addEventListener('click', onLocationConsentDecline);
+  backdrop?.addEventListener('click', onLocationConsentDecline);
 
-  updateLocationNoticeUi();
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const modal = document.getElementById('location-consent-modal');
+    if (!modal || modal.classList.contains('hidden') || userLocation.ready) return;
+    onLocationConsentDecline();
+  });
 }
 
 /** User agreed in-app → request browser GPS (second permission layer). */
@@ -159,7 +224,7 @@ function onLocationConsentAllow() {
 /** User declined in-app → use Sydney default; do not call the Geolocation API. */
 function onLocationConsentDecline() {
   if (userLocation.ready || locationRequestInFlight) return;
-  dismissLocationConsentBanner();
+  hideLocationConsentModal();
   applyDefaultUserLocation('declined');
 }
 
@@ -174,11 +239,12 @@ function applyDefaultUserLocation(_reason) {
   finalizeLocationConsentUi();
 }
 
-/** Persist choice, tear down banner UI (no lingering status strip). */
+/** Persist choice, close popup, continue any pending search. */
 function finalizeLocationConsentUi() {
   setLocationConsentButtonsDisabled(false);
   saveLocationConsentChoice();
   dismissLocationConsentBanner();
+  resumeLocationConsentFlow();
 }
 
 function setLocationConsentButtonsDisabled(disabled) {
@@ -1049,11 +1115,55 @@ function showAiAnalyzeResults() {
 
 // --- Search ---
 
+/** Toggle hero logo visibility (hidden after results load). */
+function setSearchResultsVisible(hasResults) {
+  document.getElementById('search-section')?.classList.toggle('search-section--has-results', Boolean(hasResults));
+}
+
+/** Reset compare UI — clear input, hide results, restore idle home layout. */
+function resetCompareView() {
+  const itemInput = document.getElementById('itemInput');
+  if (itemInput) itemInput.value = '';
+
+  removeBarcodeScanBanner();
+  setSearchResultsVisible(false);
+
+  const alignedSection = document.getElementById('aligned-compare-section');
+  const summarySection = document.getElementById('summary-section');
+  const alignedRowsEl = document.getElementById('aligned-compare-rows');
+  const browseGrid = document.querySelector('.comparison-grid--browse');
+  const wooliesCont = document.getElementById('woolworths-results');
+  const colesCont = document.getElementById('coles-results');
+
+  if (alignedRowsEl) alignedRowsEl.innerHTML = '';
+  hideRevealSection(alignedSection);
+  hideRevealSection(summarySection);
+  hideCompareStoreFilterToolbar();
+  if (browseGrid) browseGrid.classList.add('hidden');
+  if (wooliesCont) wooliesCont.innerHTML = '<p class="status-text">Enter an item to see prices...</p>';
+  if (colesCont) colesCont.innerHTML = '<p class="status-text">Enter an item to see prices...</p>';
+
+  compareStoreVisibility.woolworths = true;
+  compareStoreVisibility.coles = true;
+  compareStoreVisibility.aldi = true;
+  lastSimilarPairs = [];
+}
+
+function handleBrandHomeClick(event) {
+  event.preventDefault();
+  resetCompareView();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (window.location.pathname !== '/') {
+    window.location.href = '/';
+  }
+}
+
 async function searchProducts() {
   const keyword = document.getElementById('itemInput').value.trim();
   if (!keyword) {
     return alert('Enter a product name (e.g. milk, rice 1kg).');
   }
+  await ensureLocationConsent();
   await runCompareSearch({ keyword });
 }
 
@@ -1066,6 +1176,7 @@ async function searchByBarcode(barcode) {
 
   document.querySelector('.main-tab[data-tab="compare"]')?.click();
   document.getElementById('itemInput').value = digits;
+  await ensureLocationConsent();
   await runCompareSearch({ barcode: digits });
 }
 
@@ -1109,6 +1220,11 @@ async function runCompareSearch({ keyword, barcode }) {
 
     displayCompareResults(data, { fromBarcode: Boolean(barcode) });
 
+    const hasResults =
+      (Array.isArray(data?.alignedRows) && data.alignedRows.length > 0) ||
+      (Array.isArray(data?.items) && data.items.length > 0);
+    setSearchResultsVisible(hasResults);
+
     if (keyword && !barcode) {
       addToSearchHistory(keyword, 'search');
     }
@@ -1123,6 +1239,7 @@ async function runCompareSearch({ keyword, barcode }) {
     }
     if (wooliesCont) wooliesCont.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
     if (colesCont) colesCont.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
+    setSearchResultsVisible(false);
   } finally {
     searchBtn.disabled = false;
   }
@@ -1190,20 +1307,23 @@ function normalizeAlignedKeywordBlocks(alignedRows) {
           rowIndex: 0,
           woolworths: block.woolworths || null,
           coles: block.coles || null,
+          aldi: block.aldi || null,
         },
       ],
       storeCounts: block.storeCounts || {
         woolworths: block.woolworths ? 1 : 0,
         coles: block.coles ? 1 : 0,
+        aldi: block.aldi ? 1 : 0,
       },
     };
   });
 }
 
-/** Trạng thái bật/tắt cột siêu thị trên bảng Compare (mặc định cả 2 bật). */
+/** Trạng thái bật/tắt cột siêu thị trên bảng Compare (mặc định cả 3 bật). */
 const compareStoreVisibility = {
   woolworths: true,
   coles: true,
+  aldi: true,
 };
 
 function isCompareStoreVisible(storeKey) {
@@ -1256,11 +1376,11 @@ function applyCompareStoreColumnVisibility() {
   const container = document.getElementById('aligned-compare-rows');
   if (!container) return;
 
-  const visibleCount = ['woolworths', 'coles'].filter((k) =>
+  const visibleCount = ['woolworths', 'coles', 'aldi'].filter((k) =>
     isCompareStoreVisible(k)
   ).length;
 
-  container.classList.remove('cols-1', 'cols-2');
+  container.classList.remove('cols-1', 'cols-2', 'cols-3');
   container.classList.add(`cols-${Math.max(visibleCount, 1)}`);
 
   container.querySelectorAll('.aligned-store-cell[data-store]').forEach((cell) => {
@@ -1290,6 +1410,7 @@ function getMatrixRowPeers(matrixRow, visibility = compareStoreVisibility) {
   const slots = [
     { key: 'woolworths', product: matrixRow.woolworths },
     { key: 'coles', product: matrixRow.coles },
+    { key: 'aldi', product: matrixRow.aldi },
   ];
   return slots
     .filter(({ key, product }) => visibility[key] !== false && product && Number(product.price) > 0)
@@ -1319,10 +1440,10 @@ function renderSummaryFromAlignedKeywordBlocks(el, section, keywordBlocks, data 
     const peers = getMatrixRowPeers(topRow, compareStoreVisibility);
     if (!peers.length) {
       const err = data.storeErrors || {};
-      const visibleStores = ['woolworths', 'coles'].filter((k) =>
+      const visibleStores = ['woolworths', 'coles', 'aldi'].filter((k) =>
         isCompareStoreVisible(k)
       );
-      const storeLabel = { woolworths: 'Woolworths', coles: 'Coles' };
+      const storeLabel = { woolworths: 'Woolworths', coles: 'Coles', aldi: 'ALDI' };
       const apiDown = visibleStores.filter((k) => err[k] && /timed out|unable to load/i.test(err[k]));
       if (apiDown.length >= 2) {
         text += `<strong>${escapeHtml(block.keyword)}</strong>: could not reach ${apiDown.length} store(s) — check network, MongoDB, and API keys. `;
@@ -1376,11 +1497,13 @@ function buildRowMultiStoreSavingBadge(rowPeers, storeForThisSide) {
 const ALIGNED_STORE_META = [
   { key: 'woolworths', name: 'Woolworths', labelClass: 'woolies' },
   { key: 'coles', name: 'Coles', labelClass: 'coles' },
+  { key: 'aldi', name: 'ALDI', labelClass: 'aldi' },
 ];
 
 const ALIGNED_STORE_ERROR_KEY = {
   woolworths: 'woolworths',
   coles: 'coles',
+  aldi: 'aldi',
 };
 
 /**
@@ -1388,7 +1511,7 @@ const ALIGNED_STORE_ERROR_KEY = {
  */
 function renderPartialCompareBanner(container, data) {
   const err = data?.storeErrors || {};
-  const labels = { woolworths: 'Woolworths', coles: 'Coles' };
+  const labels = { woolworths: 'Woolworths', coles: 'Coles', aldi: 'ALDI' };
   const failed = Object.keys(labels).filter(
     (k) => err[k] && /timed out|unable to load|temporarily unavailable/i.test(err[k])
   );
@@ -1396,7 +1519,7 @@ function renderPartialCompareBanner(container, data) {
 
   const hasProducts = (data.items || []).length > 0;
   const hasMatrixProducts = (data.alignedRows || []).some((block) =>
-    block.matrixRows?.some((row) => row.woolworths || row.coles)
+    block.matrixRows?.some((row) => row.woolworths || row.coles || row.aldi)
   );
   if (!hasProducts && !hasMatrixProducts) return;
 
@@ -1446,11 +1569,11 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
         block.similarPairCount != null
           ? `${block.similarPairCount} matched pair${block.similarPairCount === 1 ? '' : 's'}`
           : '';
-      const totalProducts = counts.woolworths + counts.coles;
+      const totalProducts = counts.woolworths + counts.coles + (counts.aldi || 0);
       hint.textContent =
         totalProducts === 0
           ? 'No products loaded — see messages per store below'
-          : `${matrixRows.length} row${matrixRows.length === 1 ? '' : 's'}${pairNote ? ` · ${pairNote}` : ''} · Woolworths ${counts.woolworths} · Coles ${counts.coles}${block.orphanRowsCapped ? ' · showing top matches only' : ''}`;
+          : `${matrixRows.length} row${matrixRows.length === 1 ? '' : 's'}${pairNote ? ` · ${pairNote}` : ''} · Woolworths ${counts.woolworths} · Coles ${counts.coles} · ALDI ${counts.aldi || 0}${block.orphanRowsCapped ? ' · showing top matches only' : ''}`;
       group.appendChild(heading);
       group.appendChild(hint);
     } else {
@@ -1465,6 +1588,7 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
       rowEl._storeErrors = {
         woolworths: data.storeErrors?.woolworths || '',
         coles: data.storeErrors?.coles || '',
+        aldi: data.storeErrors?.aldi || '',
       };
       rowEl.style.animationDelay = `${Math.min(globalRowIndex * 0.04, 0.5)}s`;
       globalRowIndex += 1;
@@ -1819,6 +1943,9 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+document.getElementById('brand-home-link')?.addEventListener('click', handleBrandHomeClick);
+document.getElementById('brand-hero-link')?.addEventListener('click', handleBrandHomeClick);
 
 document.getElementById('itemInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') searchProducts();
@@ -2175,6 +2302,8 @@ async function analyzeShoppingList() {
   if (!prompt) {
     return alert('Enter your shopping list (e.g. 2 kg rice, 1 L milk).');
   }
+
+  await ensureLocationConsent();
 
   btn.disabled = true;
   startAiAnalyzeProgress();

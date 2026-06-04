@@ -3,6 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Google tag (gtag.js) — GA4, production hosts only -->
+    <script>
+      (function () {
+        var h = location.hostname;
+        if (h === 'localhost' || h === '127.0.0.1') return;
+        var gtagScript = document.createElement('script');
+        gtagScript.async = true;
+        gtagScript.src = 'https://www.googletagmanager.com/gtag/js?id=G-HGMLRXYFHK';
+        document.head.appendChild(gtagScript);
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        window.gtag = gtag;
+        gtag('js', new Date());
+        gtag('config', 'G-HGMLRXYFHK');
+      })();
+    </script>
     <title>Terms of Use &amp; Disclaimer | SmartChoice</title>
     <meta name="description" content="Terms of Use and Disclaimer for SmartChoice — independent Australian grocery price comparison.">
     <script>
@@ -12,11 +28,26 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="/style.css?v=7">
+    <link rel="stylesheet" href="/style.css?v=17">
 </head>
 <body class="terms-page-body">
     <div class="app-container terms-page-container">
-        <header class="main-header terms-page-header">
+        <header class="site-navbar site-navbar--terms" role="banner">
+            <a
+                href="/"
+                class="brand-logo-link"
+                aria-label="SmartChoice home"
+            >
+                <img
+                    src="/smartchoice-logo.png?v=3"
+                    alt=""
+                    class="brand-logo brand-logo--nav"
+                    width="40"
+                    height="40"
+                    decoding="async"
+                />
+                <span class="brand-logo-text">SmartChoice</span>
+            </a>
             <button
                 type="button"
                 id="theme-toggle"
@@ -27,12 +58,6 @@
                 <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
                 <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
             </button>
-            <div class="logo-area">
-                <a href="/" class="terms-home-link" aria-label="Back to SmartChoice home">
-                    <span class="logo-icon">🛒</span>
-                    <span class="terms-home-label">SmartChoice</span>
-                </a>
-            </div>
         </header>
 
         <main class="terms-content" aria-labelledby="terms-title">

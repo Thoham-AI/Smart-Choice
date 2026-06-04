@@ -3,6 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Google tag (gtag.js) — GA4, production hosts only -->
+    <script>
+      (function () {
+        var h = location.hostname;
+        if (h === 'localhost' || h === '127.0.0.1') return;
+        var gtagScript = document.createElement('script');
+        gtagScript.async = true;
+        gtagScript.src = 'https://www.googletagmanager.com/gtag/js?id=G-HGMLRXYFHK';
+        document.head.appendChild(gtagScript);
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        window.gtag = gtag;
+        gtag('js', new Date());
+        gtag('config', 'G-HGMLRXYFHK');
+      })();
+    </script>
     <title>SmartChoice | Grocery Comparison</title>
     <script>
       (function () {
@@ -11,11 +27,27 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=15">
+    <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
     <div class="app-container">
-        <header class="main-header">
+        <header class="site-navbar" role="banner">
+            <a
+                href="/"
+                class="brand-logo-link"
+                id="brand-home-link"
+                aria-label="SmartChoice home — reset search"
+            >
+                <img
+                    src="/smartchoice-logo.png?v=3"
+                    alt=""
+                    class="brand-logo brand-logo--nav"
+                    width="40"
+                    height="40"
+                    decoding="async"
+                />
+                <span class="brand-logo-text">SmartChoice</span>
+            </a>
             <button
                 type="button"
                 id="theme-toggle"
@@ -26,45 +58,9 @@
                 <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
                 <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
             </button>
-            <div class="logo-area">
-                <span class="logo-icon">🛒</span>
-                <h1>SmartChoice</h1>
-            </div>
-            <p class="tagline">Real-time grocery price comparison</p>
         </header>
 
-        <!-- Location: in-app consent first; browser Geolocation runs only after "Share location". -->
-        <div
-            id="location-consent-notice"
-            class="location-notice"
-            role="region"
-            aria-labelledby="location-notice-heading"
-            aria-live="polite"
-        >
-            <span class="location-notice-icon" aria-hidden="true">📍</span>
-            <div class="location-notice-body">
-                <p id="location-notice-heading" class="location-notice-heading">Local store prices</p>
-                <p id="location-notice-text" class="location-notice-text">
-                    Agree to share your location so we can update prices at the supermarkets nearest to you.
-                </p>
-                <div id="location-consent-actions" class="location-consent-actions">
-                    <button
-                        type="button"
-                        id="location-allow-btn"
-                        class="location-btn location-btn--primary"
-                    >
-                        Share location
-                    </button>
-                    <button
-                        type="button"
-                        id="location-decline-btn"
-                        class="location-btn location-btn--ghost"
-                    >
-                        Not now
-                    </button>
-                </div>
-            </div>
-        </div>
+        <p class="site-tagline">Real-time grocery price comparison</p>
 
         <nav class="main-tabs" aria-label="Main navigation">
             <button type="button" class="main-tab active" data-tab="compare">Compare Prices</button>
@@ -76,7 +72,22 @@
 
         <div id="panel-compare" class="tab-panel active">
 
-        <section class="search-section">
+        <section class="search-section" id="search-section">
+            <a
+                href="/"
+                class="brand-hero-link"
+                id="brand-hero-link"
+                aria-label="SmartChoice"
+            >
+                <img
+                    src="/smartchoice-logo.png?v=3"
+                    alt="SmartChoice"
+                    class="brand-logo brand-logo--hero"
+                    width="180"
+                    height="99"
+                    decoding="async"
+                />
+            </a>
             <div class="search-bar">
                 <input type="text" id="itemInput" placeholder="What are you looking for? (e.g. Apples)">
                 <div class="search-bar-actions">
@@ -107,6 +118,43 @@
                 <div id="recent-searches-tags" class="recent-searches-tags"></div>
             </section>
         </section>
+
+        <!-- Location consent popup — shown on first search, not on page load -->
+        <div
+            id="location-consent-modal"
+            class="location-modal hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="location-notice-heading"
+            aria-live="polite"
+        >
+            <div class="location-modal-backdrop" id="location-modal-backdrop"></div>
+            <div class="location-modal-content">
+                <span class="location-notice-icon" aria-hidden="true">📍</span>
+                <div class="location-notice-body">
+                    <p id="location-notice-heading" class="location-notice-heading">Local store prices</p>
+                    <p id="location-notice-text" class="location-notice-text">
+                        Agree to share your location so we can update prices at the supermarkets nearest to you.
+                    </p>
+                    <div id="location-consent-actions" class="location-consent-actions">
+                        <button
+                            type="button"
+                            id="location-allow-btn"
+                            class="location-btn location-btn--primary"
+                        >
+                            Share location
+                        </button>
+                        <button
+                            type="button"
+                            id="location-decline-btn"
+                            class="location-btn location-btn--ghost"
+                        >
+                            Not now
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <div id="barcode-scanner-modal" class="scanner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="scanner-modal-title">
             <div class="scanner-modal-backdrop" id="scanner-backdrop"></div>
@@ -198,12 +246,13 @@
 
         <section id="aligned-compare-section" class="aligned-compare-section hidden">
             <h2>Compare by item</h2>
-            <p class="aligned-compare-hint">Rows follow matched Coles ↔ Woolworths pairs. Empty dashed cells mean no match at that store.</p>
+            <p class="aligned-compare-hint">Rows follow matched Coles ↔ Woolworths pairs. ALDI is matched by keyword and size. Empty dashed cells mean no match at that store.</p>
             <div id="store-filter-toolbar" class="store-filter-toolbar hidden" role="group" aria-label="Show or hide store columns">
                 <button type="button" class="store-filter-btn woolies is-active" data-store="woolworths" aria-pressed="true">🟢 Woolworths</button>
                 <button type="button" class="store-filter-btn coles is-active" data-store="coles" aria-pressed="true">🔴 Coles</button>
+                <button type="button" class="store-filter-btn aldi is-active" data-store="aldi" aria-pressed="true">🔵 ALDI</button>
             </div>
-            <div id="aligned-compare-rows" class="aligned-compare-rows cols-2"></div>
+            <div id="aligned-compare-rows" class="aligned-compare-rows cols-3"></div>
         </section>
 
         <main class="comparison-grid comparison-grid--browse comparison-grid--two hidden">
@@ -285,7 +334,7 @@
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=51"></script>
+    <script src="/script.js?v=55"></script>
     <script src="/barcode-scanner.js?v=4"></script>
     <script src="/app.js?v=6"></script>
 
