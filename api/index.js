@@ -21,83 +21,7 @@ const stringSimilarity = require('string-similarity');
 /** Thư mục front-end tĩnh: ../public (tương đối với api/index.js) */
 const PUBLIC_DIR = path.join(__dirname, '../public');
 const INDEX_HTML_PATH = path.join(PUBLIC_DIR, 'index.html');
-
-/** Link Tally mặc định (placeholder) — thay bằng FEEDBACK_TALLY_URL trong .env */
-const FEEDBACK_TALLY_URL_FALLBACK = 'https://tally.so/r/lbzBAp';
-
-let cachedHomeHtml = null;
-let cachedHomeHtmlTallyUrl = null;
-
-/**
- * URL form Góp ý Tally — đọc từ biến môi trường FEEDBACK_TALLY_URL (local + Vercel).
- */
-function getFeedbackTallyUrl() {
-  const raw = String(process.env.FEEDBACK_TALLY_URL || '').trim();
-  const isPlaceholder =
-    !raw ||
-    /your-form-id/i.test(raw) ||
-    raw === 'https://tally.so/r/your-form-id';
-  if (!isPlaceholder && (raw.startsWith('https://') || raw.startsWith('http://'))) {
-    return raw;
-  }
-  return FEEDBACK_TALLY_URL_FALLBACK;
-}
-
-/**
- * Đồng bộ mọi link Tally trong HTML (navbar + legacy FAB nếu còn).
- */
-function syncTallyUrlsInHtml(html) {
-  const tallyUrl = getFeedbackTallyUrl();
-  return html.replace(/https:\/\/tally\.so\/r\/[a-zA-Z0-9]+/g, tallyUrl);
-}
-
-/**
- * Chuỗi HTML nút Feedback nổi (legacy FAB — giữ để inject nếu HTML cũ còn FAB).
- */
-function buildFeedbackFabHtml() {
-  const tallyUrl = getFeedbackTallyUrl().replace(/"/g, '&quot;');
-
-  return `    <!-- Nút Góp ý — link Tally từ FEEDBACK_TALLY_URL, mở tab mới -->
-    <a
-        href="${tallyUrl}"
-        id="feedback-fab"
-        class="feedback-fab"
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label="Gửi góp ý — mở trong tab mới"
-        title="Feedback"
-    >💬 <span class="feedback-fab-text">Feedback</span></a>`;
-}
-
-/**
- * Đọc index.html, thay khối nút Feedback bằng chuỗi HTML chuẩn từ Backend.
- */
-function buildHomePageHtml() {
-  const tallyUrl = getFeedbackTallyUrl();
-  let html = fs.readFileSync(INDEX_HTML_PATH, 'utf8');
-
-  html = html.replace(
-    /<!--\s*Góp ý[\s\S]*?<a[\s\S]*?id="feedback-fab"[\s\S]*?<\/a>/i,
-    buildFeedbackFabHtml()
-  );
-
-  html = syncTallyUrlsInHtml(html);
-
-  cachedHomeHtml = html;
-  cachedHomeHtmlTallyUrl = tallyUrl;
-  return html;
-}
-
-/**
- * Chèn URL Tally đúng vào trang terms (nút feedback-fab).
- */
-function injectFeedbackLinkIntoHtml(html) {
-  let out = html.replace(
-    /<!--\s*Góp ý[\s\S]*?<a[\s\S]*?id="feedback-fab"[\s\S]*?<\/a>/i,
-    buildFeedbackFabHtml()
-  );
-  return syncTallyUrlsInHtml(out);
-}
+const TERMS_HTML_PATH = path.join(PUBLIC_DIR, 'terms', 'index.html');
 
 // ============================================================
 // 1. CẤU HÌNH HẰNG SỐ
@@ -799,30 +723,24 @@ app.use((_req, res, next) => {
   res.set('Expires', '0');
   next();
 });
-// Trang Terms — chèn link Feedback Tally từ FEEDBACK_TALLY_URL rồi res.send
+// Trang Terms — phục vụ trực tiếp public/terms/index.html (không patch HTML)
 app.get(['/terms', '/terms/'], (_req, res) => {
-  try {
-    const termsPath = path.join(PUBLIC_DIR, 'terms', 'index.html');
-    const html = injectFeedbackLinkIntoHtml(fs.readFileSync(termsPath, 'utf8'));
-    res.type('html').send(html);
-  } catch (error) {
-    console.error('  ❌ Không tải được trang Terms:', error.message);
-    res.status(500).send('Cannot load terms page.');
-  }
+  res.sendFile(TERMS_HTML_PATH, (error) => {
+    if (error) {
+      console.error('  ❌ Không tải được trang Terms:', error.message);
+      res.status(500).send('Cannot load terms page.');
+    }
+  });
 });
 
-/**
- * Trang chủ — gửi HTML qua res.send (monolithic string sau khi chèn nút Feedback chuẩn).
- * Không dùng script Front-end ghi đè href; trình duyệt mở link Tally bằng thẻ <a> thuần.
- */
+/** Trang chủ — phục vụ trực tiếp public/index.html (không patch/replace HTML) */
 app.get('/', (_req, res) => {
-  try {
-    const html = buildHomePageHtml();
-    res.type('html').send(html);
-  } catch (error) {
-    console.error('  ❌ Không tải được trang chủ:', error.message);
-    res.status(500).send('Cannot load home page.');
-  }
+  res.sendFile(INDEX_HTML_PATH, (error) => {
+    if (error) {
+      console.error('  ❌ Không tải được trang chủ:', error.message);
+      res.status(500).send('Cannot load home page.');
+    }
+  });
 });
 
 /** html5-qrcode: repo root hoặc public/ (Vercel static chỉ phục vụ public/). */
