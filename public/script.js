@@ -4,13 +4,13 @@ const API_BASE =
     ? window.location.origin
     : 'http://localhost:3000';
 const FALLBACK_IMAGE_URL = 'https://placehold.co/150?text=No+Image';
-const CART_STORAGE_KEY = 'smartchoice_cart';
-const WATCHLIST_STORAGE_KEY = 'smartchoice_watchlist';
-const THEME_STORAGE_KEY = 'smartchoice_theme';
-const HISTORY_STORAGE_KEY = 'smartchoice_history';
+const CART_STORAGE_KEY = 'shoppingsmart_cart';
+const WATCHLIST_STORAGE_KEY = 'shoppingsmart_watchlist';
+const THEME_STORAGE_KEY = 'shoppingsmart_theme';
+const HISTORY_STORAGE_KEY = 'shoppingsmart_history';
 const HISTORY_MAX_ITEMS = 5;
 /** Persists in-app location choice so the banner does not reappear every visit. */
-const LOCATION_CONSENT_STORAGE_KEY = 'smartchoice_location_consent';
+const LOCATION_CONSENT_STORAGE_KEY = 'shoppingsmart_location_consent';
 
 /** Sydney CBD fallback when the user declines GPS or the browser cannot provide it. */
 const DEFAULT_SYDNEY_LOCATION = {
@@ -254,7 +254,7 @@ function setLocationConsentButtonsDisabled(disabled) {
   if (declineBtn) declineBtn.disabled = disabled;
 }
 
-/** Headers attached to every SmartChoice API request. */
+/** Headers attached to every ShoppingSmart API request. */
 function getLocationRequestHeaders() {
   return {
     'X-Latitude': String(userLocation.latitude),
@@ -616,7 +616,7 @@ function renderTripSavingsBanner(el, amount, referenceTotal = 0) {
   window.setTimeout(() => el.classList.remove('trip-savings-banner--pop'), 600);
 }
 
-// --- Search history (localStorage: smartchoice_history) ---
+// --- Search history (localStorage: shoppingsmart_history) ---
 
 /** Load history array from localStorage */
 function loadSearchHistory() {
@@ -803,7 +803,7 @@ function formatRequestLabel(request) {
 /** Similar product pairs from latest search — used by Add to list */
 let lastSimilarPairs = [];
 
-// --- Price watchlist (localStorage: smartchoice_watchlist) ---
+// --- Price watchlist (localStorage: shoppingsmart_watchlist) ---
 
 /** Stable product id for watchlist entries */
 function getWatchlistProductId(item) {
@@ -2175,7 +2175,7 @@ function renderWatchlistPanel(refreshResults = null) {
   const list = loadWatchlist();
   updateWatchlistTabBadge();
 
-  window.SmartChoiceApp?.destroyAllWatchlistCharts?.();
+  window.ShoppingSmartApp?.destroyAllWatchlistCharts?.();
 
   if (!list.length) {
     grid.innerHTML = `
@@ -2271,14 +2271,14 @@ function renderWatchlistPanel(refreshResults = null) {
 
     card.querySelector('.watchlist-remove').addEventListener('click', (e) => {
       e.stopPropagation();
-      window.SmartChoiceApp?.destroyWatchlistChart?.(entry.id);
+      window.ShoppingSmartApp?.destroyWatchlistChart?.(entry.id);
       saveWatchlist(loadWatchlist().filter((w) => w.id !== entry.id));
       updateWatchlistTabBadge();
       syncWatchlistBellButtons();
       renderWatchlistPanel(refreshResults);
     });
 
-    window.SmartChoiceApp?.attachWatchlistCard?.(card, entry);
+    window.ShoppingSmartApp?.attachWatchlistCard?.(card, entry);
 
     grid.appendChild(card);
   });

@@ -19,15 +19,15 @@
         gtag('config', 'G-HGMLRXYFHK');
       })();
     </script>
-    <title>SmartChoice | Grocery Comparison</title>
+    <title>ShoppingSmart | Grocery Comparison</title>
     <script>
       (function () {
-        var t = localStorage.getItem('smartchoice_theme');
+        var t = localStorage.getItem('shoppingsmart_theme');
         var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=21">
+    <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
     <div class="app-container">
@@ -36,17 +36,18 @@
                 href="/"
                 class="brand-logo-link"
                 id="brand-home-link"
-                aria-label="SmartChoice home — reset search"
+                aria-label="ShoppingSmart home — reset search"
             >
                 <img
-                    src="/smartchoice-logo.png?v=3"
+                    src="/smartchoice-logo.svg?v=6"
                     alt=""
                     class="brand-logo brand-logo--nav"
                     width="40"
                     height="40"
                     decoding="async"
                 />
-                <span class="brand-logo-text">SmartChoice</span>
+                <!-- 1. Tên thương hiệu: ShoppingSmart (không còn SmartChoice) -->
+                <span class="brand-logo-text">ShoppingSmart</span>
             </a>
             <!-- Góc phải header: Góp ý (Tally) + dark mode -->
             <div class="site-navbar-actions">
@@ -88,15 +89,16 @@
         <div id="panel-compare" class="tab-panel active">
 
         <section class="search-section" id="search-section">
+            <!-- 4. Logo hero — bg-transparent, SVG nền trong suốt (không khối trắng) -->
             <a
                 href="/"
-                class="brand-hero-link"
+                class="brand-hero-link bg-transparent"
                 id="brand-hero-link"
-                aria-label="SmartChoice"
+                aria-label="ShoppingSmart"
             >
                 <img
-                    src="/smartchoice-logo.png?v=3"
-                    alt="SmartChoice"
+                    src="/smartchoice-logo.svg?v=6"
+                    alt="ShoppingSmart"
                     class="brand-logo brand-logo--hero"
                     width="180"
                     height="99"
@@ -111,17 +113,16 @@
                     data-rotating-placeholder="true"
                 >
                 <div class="search-bar-actions">
-                    <button type="button" onclick="searchProducts()" id="searchBtn">Compare Prices</button>
-                    <div class="scanner-action">
-                        <button
-                            type="button"
-                            id="scannerBtn"
-                            class="scanner-open-btn"
-                            title="Scan product barcode"
-                            aria-label="Open barcode scanner"
-                        >📷</button>
-                        <span class="scanner-label">barcode scanner</span>
-                    </div>
+                    <!-- 2. Nút tìm kiếm: Search (không lặp "Compare Prices" với tab) -->
+                    <button type="button" onclick="searchProducts()" id="searchBtn">🔍 Search</button>
+                    <!-- 3. Barcode: chỉ icon, không text "barcode scanner" -->
+                    <button
+                        type="button"
+                        id="scannerBtn"
+                        class="scanner-open-btn"
+                        title="Barcode Scanner"
+                        aria-label="Barcode Scanner"
+                    >📷</button>
                 </div>
             </div>
             <section id="recent-searches-section" class="recent-searches hidden" aria-label="Recent searches">
@@ -322,16 +323,20 @@
         </aside>
 
         <footer class="site-footer" role="contentinfo">
+            <!-- 1. Footer: ShoppingSmart (không còn SmartChoice) -->
             <p class="site-footer-meta">
-                &copy; 2026 SmartChoice. Built for the community.
+                &copy; 2026 ShoppingSmart. Built for the community.
                 |
                 <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
             </p>
+            <!-- UX: ẩn bộ đếm pageviews — không hiển thị cho người dùng
             <p id="pageviews-display" class="pageviews-display" hidden aria-live="polite">
                 📊 Pageviews: <span id="pageviews-count">—</span>
             </p>
+            -->
             <p class="site-footer-legal">
-                SmartChoice is an independent platform built for consumer price comparison purposes.
+                <!-- 1. Disclaimer: ShoppingSmart -->
+                ShoppingSmart is an independent platform built for consumer price comparison purposes.
                 We are not officially affiliated with, do not represent, and are not authorized by Coles Supermarkets or Woolworths Group.
                 Brand names, logos, and product images are the copyright of their respective owners.
             </p>
@@ -342,9 +347,9 @@
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=57"></script>
+    <script src="/script.js?v=58"></script>
     <script src="/barcode-scanner.js?v=4"></script>
-    <script src="/app.js?v=6"></script>
+    <script src="/app.js?v=7"></script>
 
     <!-- Vercel Analytics — production host only (avoids 404/MIME errors on localhost) -->
     <script>

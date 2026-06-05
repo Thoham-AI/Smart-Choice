@@ -1,4 +1,4 @@
-// SmartChoice/matcher.js
+// ShoppingSmart/matcher.js
 const OpenAI = require('openai');
 
 // It's best to use an Environment Variable for your key so it stays secret

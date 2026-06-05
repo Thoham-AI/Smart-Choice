@@ -1,5 +1,5 @@
 /**
- * SmartChoice – Backend Express (RapidAPI + OpenAI)
+ * ShoppingSmart – Backend Express (RapidAPI + OpenAI)
  * Local:  npm start  →  http://localhost:3000  (app.listen khi NODE_ENV !== 'production')
  * Vercel: export app cho serverless – không gọi listen
  */
@@ -33,7 +33,11 @@ let cachedHomeHtmlTallyUrl = null;
  */
 function getFeedbackTallyUrl() {
   const raw = String(process.env.FEEDBACK_TALLY_URL || '').trim();
-  if (raw.startsWith('https://') || raw.startsWith('http://')) {
+  const isPlaceholder =
+    !raw ||
+    /your-form-id/i.test(raw) ||
+    raw === 'https://tally.so/r/your-form-id';
+  if (!isPlaceholder && (raw.startsWith('https://') || raw.startsWith('http://'))) {
     return raw;
   }
   return FEEDBACK_TALLY_URL_FALLBACK;
@@ -70,10 +74,6 @@ function buildFeedbackFabHtml() {
  */
 function buildHomePageHtml() {
   const tallyUrl = getFeedbackTallyUrl();
-  if (cachedHomeHtml && cachedHomeHtmlTallyUrl === tallyUrl) {
-    return cachedHomeHtml;
-  }
-
   let html = fs.readFileSync(INDEX_HTML_PATH, 'utf8');
 
   html = html.replace(
@@ -155,10 +155,10 @@ const openaiClient = process.env.OPENAI_API_KEY
   : null;
 
 // ============================================================
-// 1b. MONGODB – API CACHE (database from URI path, default smartchoice)
+// 1b. MONGODB – API CACHE (database from URI path, default shoppingsmart)
 // ============================================================
 const MONGODB_URI = String(process.env.MONGODB_URI || '').trim();
-const DEFAULT_DB_NAME = 'smartchoice';
+const DEFAULT_DB_NAME = 'shoppingsmart';
 const API_CACHE_COLLECTION = 'api_cache';
 /**
  * Cache tìm kiếm siêu thị (MongoDB native driver, KHÔNG dùng Mongoose model):
@@ -195,8 +195,8 @@ let mongoCooldownUntil = 0;
 const memoryApiCache = new Map();
 
 /**
- * Parse database name from MongoDB URI path (e.g. ...mongodb.net/smartchoice?appName=...).
- * Falls back to "smartchoice" when the URI has no database segment.
+ * Parse database name from MongoDB URI path (e.g. ...mongodb.net/shoppingsmart?appName=...).
+ * Falls back to "shoppingsmart" when the URI has no database segment.
  */
 function parseDatabaseNameFromUri(uri) {
   if (!uri) return DEFAULT_DB_NAME;
@@ -817,10 +817,8 @@ app.get(['/terms', '/terms/'], (_req, res) => {
  */
 app.get('/', (_req, res) => {
   try {
-    if (!cachedHomeHtml) {
-      cachedHomeHtml = buildHomePageHtml();
-    }
-    res.type('html').send(cachedHomeHtml);
+    const html = buildHomePageHtml();
+    res.type('html').send(html);
   } catch (error) {
     console.error('  ❌ Không tải được trang chủ:', error.message);
     res.status(500).send('Cannot load home page.');
@@ -5499,7 +5497,7 @@ app.get('/health', (_req, res) => {
 if (process.env.NODE_ENV !== 'production') {
   const PORT = 3000;
   app.listen(PORT, () => {
-    console.log(`🚀 SmartChoice đang chạy mượt mà tại: http://localhost:${PORT}`);
+    console.log(`🚀 ShoppingSmart đang chạy mượt mà tại: http://localhost:${PORT}`);
     initMongoForLocalStartup().catch((err) => {
       console.error('MongoDB startup connection failed:', err.message);
     });

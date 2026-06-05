@@ -1,5 +1,5 @@
 /**
- * SmartChoice – Barcode scanner (html5-qrcode bundled in public/html5-qrcode.min.js)
+ * ShoppingSmart – Barcode scanner (html5-qrcode bundled in public/html5-qrcode.min.js)
  * - Prefer rear camera on phones (facingMode: environment)
  * - Step through fallbacks when { exact: "environment" } is unsupported
  * - Surface clear errors when camera permission is denied

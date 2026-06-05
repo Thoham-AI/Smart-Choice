@@ -41,5 +41,5 @@ process.on('SIGINT', async () => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 SmartChoice running at http://localhost:${PORT}`);
+  console.log(`\n🚀 ShoppingSmart running at http://localhost:${PORT}`);
 });

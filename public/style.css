@@ -1,5 +1,5 @@
 /* ============================================================
-   SmartChoice – Design tokens (Light / Dark) + smooth motion
+   ShoppingSmart – Design tokens (Light / Dark) + smooth motion
    ============================================================ */
 :root {
     --bg-page: #f0f4f8;
@@ -25,6 +25,8 @@
     --coles-red: #e01a22;
     --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
     --transition-smooth: 0.3s var(--ease-smooth);
+    /* UX: chiều cao thống nhất ô tìm kiếm + nút Search + barcode */
+    --search-control-height: 48px;
 }
 
 [data-theme="dark"] {
@@ -94,13 +96,20 @@ body {
     transition: color var(--transition-smooth);
 }
 
-/* Brand logo — shared PNG asset, nav + hero sizes */
+/* Utility — tương đương Tailwind bg-transparent */
+.bg-transparent {
+    background: transparent !important;
+    box-shadow: none;
+}
+
+/* Brand logo — SVG, nav + hero; nền trong suốt hòa vào trang */
 .brand-logo-link,
 .brand-hero-link {
     display: inline-flex;
     align-items: center;
     text-decoration: none;
     color: inherit;
+    background: transparent; /* 4. Xóa nền trắng bọc logo */
     transition: opacity var(--transition-smooth), transform var(--transition-smooth);
 }
 
@@ -130,6 +139,7 @@ body {
     display: block;
     height: auto;
     flex-shrink: 0;
+    background: transparent; /* UX: logo không có khối nền trắng */
 }
 
 /* Navbar mark — ~38px tall */
@@ -167,6 +177,7 @@ body {
     width: min(180px, 58vw);
     max-width: 200px;
     margin: 0 auto;
+    background: transparent; /* 4. Logo hero không có khối nền trắng */
 }
 
 /* Hide hero logo once compare results are shown */
@@ -894,6 +905,7 @@ body.location-modal-open {
 
 .search-section {
     margin: 16px 0 30px;
+    background: transparent; /* 4. Khối hero/search không nền trắng */
 }
 
 /* Recent searches */
@@ -1443,41 +1455,27 @@ body.location-modal-open {
 
 .search-bar-actions {
     display: flex;
-    align-items: flex-end;
+    align-items: center; /* 3. Căn chiều cao input + Search + barcode icon */
     gap: 10px;
     flex-shrink: 0;
 }
 
-.scanner-action {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    flex-shrink: 0;
-}
-
-/* Subtle caption under the camera icon — stays minimal in light/dark */
-.scanner-label {
-    font-size: 0.6875rem;
-    line-height: 1.2;
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
-    text-transform: lowercase;
-    white-space: nowrap;
-    user-select: none;
-}
-
+/* 3. Nút barcode — chỉ icon, cùng chiều cao với ô input */
 .scanner-open-btn {
-    width: 48px;
-    height: 48px;
+    box-sizing: border-box;
+    width: var(--search-control-height);
+    height: var(--search-control-height);
     padding: 0;
-    font-size: 1.35rem;
+    font-size: 1.25rem;
     line-height: 1;
     background: var(--bg-input);
     color: var(--text-primary);
     border: 2px solid var(--border-color);
     border-radius: 8px;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: background-color var(--transition-smooth), border-color var(--transition-smooth);
 }
 
@@ -1590,10 +1588,24 @@ input[type="text"],
 }
 
 input[type="text"] {
+    box-sizing: border-box;
     width: 400px;
-    padding: 12px;
+    height: var(--search-control-height);
+    padding: 0 12px;
     border-radius: 8px;
     font-size: 1rem;
+}
+
+/* UX: nút Search cùng chiều cao với ô nhập và nút barcode */
+#searchBtn {
+    box-sizing: border-box;
+    height: var(--search-control-height);
+    padding: 0 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    white-space: nowrap;
 }
 
 /* Compare bar: smooth fade when rotating Australian grocery placeholder hints */
@@ -2175,25 +2187,10 @@ button:hover {
     color: var(--accent);
 }
 
-/* Ẩn mặc định — app.js bật .is-visible sau /api/pageviews */
+/* UX: ẩn hoàn toàn bộ đếm pageviews (HTML đã comment + app.js tắt boot) */
 .pageviews-display {
-    display: none;
-    margin: 0 0 12px;
-    font-size: 0.72rem;
-    line-height: 1.4;
-    color: var(--text-muted);
-    letter-spacing: 0.01em;
-    text-align: center;
-}
-
-.pageviews-display.is-visible {
-    display: block;
-}
-
-.pageviews-display #pageviews-count {
-    font-variant-numeric: tabular-nums;
-    font-weight: 700;
-    color: var(--text-secondary);
+    display: none !important;
+    margin: 0;
 }
 
 .site-footer-legal {

@@ -1,9 +1,9 @@
 /**
- * SmartChoice – Biểu đồ watchlist, xuất PDF, bộ đếm pageviews.
+ * ShoppingSmart – Biểu đồ watchlist, xuất PDF, bộ đếm pageviews.
  * Nút Feedback: href cố định trong HTML (api/index.js).
  */
 
-(function initSmartChoiceApp() {
+(function initShoppingSmartApp() {
   /** Active Chart.js instances keyed by watchlist entry id (destroy before redraw). */
   const watchlistChartRegistry = new Map();
 
@@ -371,14 +371,14 @@
   }
 
   /**
-   * Footer on every PDF page: "Powered by **SmartChoice** - AI Grocery Analytic"
+   * Footer on every PDF page: "Powered by **ShoppingSmart** - AI Grocery Analytic"
    */
   function addPdfPoweredByFooter(doc) {
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     const y = pageHeight - 10;
     const prefix = 'Powered by ';
-    const brand = 'SmartChoice';
+    const brand = 'ShoppingSmart';
     const suffix = ' - AI Grocery Analytic';
 
     doc.setFontSize(9);
@@ -506,7 +506,7 @@
     });
 
     exportShoppingListToPdf({
-      title: 'SmartChoice Shopping List',
+      title: 'ShoppingSmart Shopping List',
       subtitle: 'Your cart — compare store totals before you shop',
       rows,
       totals: [
@@ -542,7 +542,7 @@
     });
 
     exportShoppingListToPdf({
-      title: 'SmartChoice AI Shopping List',
+      title: 'ShoppingSmart AI Shopping List',
       subtitle: 'Optimized split between Coles and Woolworths (Beta)',
       rows,
       totals: [
@@ -556,7 +556,7 @@
   document.getElementById('export-cart-pdf-btn')?.addEventListener('click', exportCartToPdf);
   document.getElementById('export-ai-pdf-btn')?.addEventListener('click', exportAiListToPdf);
 
-  window.SmartChoiceApp = {
+  window.ShoppingSmartApp = {
     attachWatchlistCard,
     destroyWatchlistChart,
     destroyAllWatchlistCharts,
@@ -568,7 +568,7 @@
   };
 
   // ============================================================
-  // Pageviews — gọi sau khi trang load (idle), không chặn UI / AI
+  // Pageviews — UX: đã ẩn khỏi giao diện; giữ logic để bật lại sau nếu cần
   // ============================================================
 
   function formatPageViewCount(value) {
@@ -614,7 +614,7 @@
         showPageViewsFooter(data.total_views);
       }
     } catch (err) {
-      console.warn('[SmartChoice] Pageviews:', err.message || err);
+      console.warn('[ShoppingSmart] Pageviews:', err.message || err);
     }
   }
 
@@ -629,8 +629,8 @@
 
   function bootPageViewCounter() {
     const startPageViews = () => {
-      if (window.__smartchoicePageViewsScheduled) return;
-      window.__smartchoicePageViewsScheduled = true;
+      if (window.__shoppingsmartPageViewsScheduled) return;
+      window.__shoppingsmartPageViewsScheduled = true;
       schedulePageViewCounter();
     };
 
@@ -641,5 +641,6 @@
     }
   }
 
-  bootPageViewCounter();
+  // UX: không boot bộ đếm — người dùng không thấy "Pageviews: …"
+  // bootPageViewCounter();
 })();

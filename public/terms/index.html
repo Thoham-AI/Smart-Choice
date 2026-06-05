@@ -19,16 +19,16 @@
         gtag('config', 'G-HGMLRXYFHK');
       })();
     </script>
-    <title>Terms of Use &amp; Disclaimer | SmartChoice</title>
-    <meta name="description" content="Terms of Use and Disclaimer for SmartChoice — independent Australian grocery price comparison.">
+    <title>Terms of Use &amp; Disclaimer | ShoppingSmart</title>
+    <meta name="description" content="Terms of Use and Disclaimer for ShoppingSmart — independent Australian grocery price comparison.">
     <script>
       (function () {
-        var t = localStorage.getItem('smartchoice_theme');
+        var t = localStorage.getItem('shoppingsmart_theme');
         var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="/style.css?v=21">
+    <link rel="stylesheet" href="/style.css?v=24">
 </head>
 <body class="terms-page-body">
     <div class="app-container terms-page-container">
@@ -36,17 +36,18 @@
             <a
                 href="/"
                 class="brand-logo-link"
-                aria-label="SmartChoice home"
+                aria-label="ShoppingSmart home"
             >
                 <img
-                    src="/smartchoice-logo.png?v=3"
+                    src="/smartchoice-logo.svg?v=6"
                     alt=""
                     class="brand-logo brand-logo--nav"
                     width="40"
                     height="40"
                     decoding="async"
                 />
-                <span class="brand-logo-text">SmartChoice</span>
+                <!-- 1. Tên thương hiệu: ShoppingSmart -->
+                <span class="brand-logo-text">ShoppingSmart</span>
             </a>
             <div class="site-navbar-actions">
                 <a
@@ -121,29 +122,32 @@
             <p>We reserve the right to modify these terms at any time without prior notice. Continued use of the Service following any changes constitutes your acceptance of the revised terms.</p>
 
             <p class="terms-back-wrap">
-                <a href="/" class="terms-back-link">&larr; Back to SmartChoice</a>
+                <a href="/" class="terms-back-link">&larr; Back to ShoppingSmart</a>
             </p>
         </main>
 
         <footer class="site-footer" role="contentinfo">
+            <!-- 1. Footer: ShoppingSmart -->
             <p class="site-footer-meta">
-                &copy; 2026 SmartChoice. Built for the community.
+                &copy; 2026 ShoppingSmart. Built for the community.
                 |
                 <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
             </p>
+            <!-- UX: ẩn bộ đếm pageviews
             <p id="pageviews-display" class="pageviews-display" hidden aria-live="polite">
                 📊 Pageviews: <span id="pageviews-count">—</span>
             </p>
+            -->
         </footer>
     </div>
 
-    <script src="/app.js?v=6"></script>
+    <script src="/app.js?v=7"></script>
     <script>
       document.getElementById('theme-toggle')?.addEventListener('click', function () {
         var current = document.documentElement.getAttribute('data-theme') || 'light';
         var next = current === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
-        localStorage.setItem('smartchoice_theme', next);
+        localStorage.setItem('shoppingsmart_theme', next);
       });
     </script>
 </body>
