@@ -1,27 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 88" role="img" aria-labelledby="ssTitle">
-  <title id="ssTitle">ShoppingSmart Logo</title>
-  <!-- Chuyển từ PNG gốc: hai giỏ đỏ/xanh đối diện, nền trong suốt -->
-  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <!-- Khung đáy xanh nối hai giỏ -->
-    <g stroke="#0054D2" stroke-width="3">
-      <path d="M47 62 H72 V74 H88 V74 H88 V62 H113"/>
-      <path d="M72 74 H88"/>
-    </g>
-    <circle cx="76" cy="74" r="5" fill="#0054D2" stroke="#0054D2" stroke-width="2"/>
-    <circle cx="84" cy="74" r="5" fill="#0054D2" stroke="#0054D2" stroke-width="2"/>
-    <!-- Giỏ trái (Coles – đỏ) -->
-    <path d="M34 26c0-6-5-10-11-10S12 20 12 26" stroke="#E31E24" stroke-width="3"/>
-    <path d="M36 30h22l-5 24H31L26 30h10z" fill="#fff5f5" stroke="#E31E24" stroke-width="2.5"/>
-    <line x1="30" y1="36" x2="50" y2="36" stroke="#E31E24" stroke-width="2" opacity="0.55"/>
-    <line x1="38" y1="30" x2="38" y2="54" stroke="#E31E24" stroke-width="2" opacity="0.55"/>
-    <circle cx="33" cy="62" r="5" fill="#E31E24" stroke="#E31E24" stroke-width="2"/>
-    <circle cx="47" cy="62" r="5" fill="#E31E24" stroke="#E31E24" stroke-width="2"/>
-    <!-- Giỏ phải (Woolworths – xanh) -->
-    <path d="M126 26c0-6 5-10 11-10s11 4 11 10" stroke="#00953A" stroke-width="3"/>
-    <path d="M124 30H102l5 24h22l5-24H114z" fill="#f0fdf4" stroke="#00953A" stroke-width="2.5"/>
-    <line x1="110" y1="36" x2="130" y2="36" stroke="#00953A" stroke-width="2" opacity="0.55"/>
-    <line x1="122" y1="30" x2="122" y2="54" stroke="#00953A" stroke-width="2" opacity="0.55"/>
-    <circle cx="113" cy="62" r="5" fill="#00953A" stroke="#00953A" stroke-width="2"/>
-    <circle cx="127" cy="62" r="5" fill="#00953A" stroke="#00953A" stroke-width="2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="100%" height="100%">
+  <!-- KHUNG GẦM VÀ BÁNH XE TRUNG TÂM (MÀU XANH DƯƠNG) -->
+  <g fill="none" stroke="#2870ED" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Nửa khung xanh bên trái (Kết nối từ xe Đỏ) -->
+    <path d="M 220 280 L 350 280 A 15 15 0 0 1 365 295 L 365 305 A 15 15 0 0 0 350 320 L 310 320" />
+    
+    <!-- Nửa khung xanh bên phải (Kết nối từ xe Xanh lá) -->
+    <path d="M 580 280 L 450 280 A 15 15 0 0 0 435 295 L 435 305 A 15 15 0 0 1 450 320 L 490 320" />
+    
+    <!-- Thanh ngang liên kết 2 trục ở giữa -->
+    <path d="M 350 320 L 450 320" />
+    
+    <!-- Hai bánh xe màu xanh dương -->
+    <circle cx="310" cy="320" r="16" />
+    <circle cx="490" cy="320" r="16" />
+  </g>
+
+  <!-- ========================================== -->
+  <!-- 1. XE ĐẨY BÊN TRÁI (MÀU ĐỎ - QUAY VÀO TRONG) -->
+  <!-- ========================================== -->
+  <g fill="none" stroke="#E51A22" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Tay cầm kéo dài xuống bánh sau -->
+    <path d="M 140 140 Q 180 140, 190 190 L 220 280 L 220 320" />
+    <!-- Chấm tròn ở đầu tay cầm -->
+    <circle cx="140" cy="140" r="12" fill="#E51A22" stroke="none" />
+    
+    <!-- Bánh xe sau (màu Đỏ) -->
+    <circle cx="220" cy="320" r="16" />
+    
+    <!-- Khung giỏ xe hình thang bo góc -->
+    <path d="M 190 190 L 360 200 A 15 15 0 0 1 375 215 L 350 270 A 15 15 0 0 1 335 280 L 220 280 Z" />
+    
+    <!-- Lưới chia 4 ô -->
+    <path d="M 203 235 L 362 235" /> <!-- Nét ngang -->
+    <path d="M 275 195 L 280 280" /> <!-- Nét dọc -->
+  </g>
+
+  <!-- ========================================== -->
+  <!-- 2. XE ĐẨY BÊN PHẢI (MÀU XANH LÁ - QUAY VÀO TRONG) -->
+  <!-- ========================================== -->
+  <g fill="none" stroke="#12A826" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Tay cầm kéo dài xuống bánh sau -->
+    <path d="M 660 140 Q 620 140, 610 190 L 580 280 L 580 320" />
+    <!-- Chấm tròn ở đầu tay cầm -->
+    <circle cx="660" cy="140" r="12" fill="#12A826" stroke="none" />
+    
+    <!-- Bánh xe sau (màu Xanh lá) -->
+    <circle cx="580" cy="320" r="16" />
+    
+    <!-- Khung giỏ xe hình thang bo góc đối xứng -->
+    <path d="M 610 190 L 440 200 A 15 15 0 0 0 425 215 L 450 270 A 15 15 0 0 0 465 280 L 580 280 Z" />
+    
+    <!-- Lưới chia 4 ô -->
+    <path d="M 597 235 L 438 235" /> <!-- Nét ngang -->
+    <path d="M 525 195 L 520 280" /> <!-- Nét dọc -->
   </g>
 </svg>
