@@ -27,7 +27,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=24">
+    <link rel="stylesheet" href="style.css?v=25">
 </head>
 <body>
     <div class="app-container">
@@ -115,14 +115,17 @@
                 <div class="search-bar-actions">
                     <!-- 2. Nút tìm kiếm: Search (không lặp "Compare Prices" với tab) -->
                     <button type="button" onclick="searchProducts()" id="searchBtn">🔍 Search</button>
-                    <!-- 3. Barcode: chỉ icon, không text "barcode scanner" -->
+                    <!-- Barcode: icon máy ảnh + chữ cạnh bên -->
                     <button
                         type="button"
                         id="scannerBtn"
                         class="scanner-open-btn"
-                        title="Barcode Scanner"
-                        aria-label="Barcode Scanner"
-                    >📷</button>
+                        title="Barcode scan"
+                        aria-label="Barcode scan"
+                    >
+                        <span class="scanner-open-icon" aria-hidden="true">📷</span>
+                        <span class="scanner-open-label">barcode scan</span>
+                    </button>
                 </div>
             </div>
             <section id="recent-searches-section" class="recent-searches hidden" aria-label="Recent searches">

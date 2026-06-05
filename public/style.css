@@ -1460,13 +1460,14 @@ body.location-modal-open {
     flex-shrink: 0;
 }
 
-/* 3. Nút barcode — chỉ icon, cùng chiều cao với ô input */
+/* Nút barcode — icon + chữ cạnh bên, cùng chiều cao với ô input */
 .scanner-open-btn {
     box-sizing: border-box;
-    width: var(--search-control-height);
     height: var(--search-control-height);
-    padding: 0;
-    font-size: 1.25rem;
+    padding: 0 14px;
+    gap: 6px;
+    font-size: 0.875rem;
+    font-weight: 600;
     line-height: 1;
     background: var(--bg-input);
     color: var(--text-primary);
@@ -1476,7 +1477,18 @@ body.location-modal-open {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    white-space: nowrap;
     transition: background-color var(--transition-smooth), border-color var(--transition-smooth);
+}
+
+.scanner-open-icon {
+    font-size: 1.15rem;
+    line-height: 1;
+}
+
+.scanner-open-label {
+    letter-spacing: 0.01em;
+    text-transform: lowercase;
 }
 
 .scanner-open-btn:hover {
