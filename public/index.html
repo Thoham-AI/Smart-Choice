@@ -37,7 +37,7 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=25">
+    <link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
     <div class="app-container">
@@ -354,16 +354,39 @@
                 Brand names, logos, and product images are the copyright of their respective owners.
             </p>
         </footer>
+
+        <!-- PWA: custom install banner (shown after 30s or successful search) -->
+        <div
+            id="pwa-install-banner"
+            class="pwa-install-banner hidden"
+            role="region"
+            aria-label="Install ShoppingSmart app"
+        >
+            <div class="pwa-install-banner-inner">
+                <span class="pwa-install-icon" aria-hidden="true">📲</span>
+                <div class="pwa-install-copy">
+                    <strong class="pwa-install-title">Install ShoppingSmart</strong>
+                    <span id="pwa-install-sub" class="pwa-install-sub">Quick access from your home screen</span>
+                </div>
+                <button type="button" id="pwa-install-btn" class="pwa-install-btn">Install</button>
+                <button
+                    type="button"
+                    id="pwa-install-dismiss"
+                    class="pwa-install-dismiss"
+                    aria-label="Dismiss install suggestion"
+                >✕</button>
+            </div>
+        </div>
     </div>
 
     <!-- Barcode scanner library (bundled locally under public/) -->
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=58"></script>
+    <script src="/script.js?v=59"></script>
     <script src="/barcode-scanner.js?v=4"></script>
     <script src="/app.js?v=7"></script>
-    <script src="/pwa-register.js?v=1"></script>
+    <script src="/pwa-register.js?v=2"></script>
 
     <!-- Vercel Analytics — production host only (avoids 404/MIME errors on localhost) -->
     <script>

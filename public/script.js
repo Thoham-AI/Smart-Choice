@@ -1227,6 +1227,10 @@ async function runCompareSearch({ keyword, barcode }) {
       (Array.isArray(data?.items) && data.items.length > 0);
     setSearchResultsVisible(hasResults);
 
+    if (hasResults) {
+      window.ShoppingSmartPwa?.notifyUserAction?.();
+    }
+
     if (keyword && !barcode) {
       addToSearchHistory(keyword, 'search');
     }
