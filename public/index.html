@@ -2,7 +2,17 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- PWA / mobile install -->
+    <meta name="theme-color" content="#3b82f6">
+    <meta name="description" content="Compare grocery prices at Coles and Woolworths in real time.">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="ShoppingSmart">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" href="/icons/icon-192x192.png" sizes="192x192" type="image/png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <!-- Google tag (gtag.js) — GA4, production hosts only -->
     <script>
       (function () {
@@ -353,6 +363,7 @@
     <script src="/script.js?v=58"></script>
     <script src="/barcode-scanner.js?v=4"></script>
     <script src="/app.js?v=7"></script>
+    <script src="/pwa-register.js?v=1"></script>
 
     <!-- Vercel Analytics — production host only (avoids 404/MIME errors on localhost) -->
     <script>
