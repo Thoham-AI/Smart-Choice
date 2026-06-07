@@ -36,7 +36,9 @@ const SUPPORTED_SUPERMARKETS = ['Coles', 'Woolworths'];
 const RESULT_LIMIT = 20;   // số sản phẩm tối đa mỗi siêu thị
 /** Khi không có cặp WW↔Coles, giới hạn hàng chỉ 1 siêu thị (tránh 20 dòng Coles-only). */
 const MAX_ORPHAN_STORE_ROWS = 10;
-const SIMILARITY_THRESHOLD = 0.58; // Ngưỡng sau khi đã tính điểm tổng hợp (tên + size + loại)
+const SIMILARITY_THRESHOLD = 0.65; // Ngưỡng sau khi đã tính điểm tổng hợp (tên + size + loại)
+/** Bật log chi tiết ghép cặp: MATCH_DEBUG=1 node api/index.js */
+const MATCH_DEBUG = process.env.MATCH_DEBUG === '1' || process.env.MATCH_DEBUG === 'true';
 const LIST_MATCH_THRESHOLD = 0.38; // Ngưỡng chọn sản phẩm khớp nhất cho từng dòng giỏ AI
 const API_TIMEOUT_MS = 28000; // RapidAPI search — tránh chờ 60s khi cache miss
 const API_MAX_RETRIES = 2;
@@ -46,7 +48,7 @@ const COMPARE_API_MAX_RETRIES = 2;
 const COMPARE_ROUTE_MAX_MS = 55000;
 /** MongoDB: fail nhanh nếu Atlas/local không phản hồi (không chặn search). */
 const MONGO_CONNECT_TIMEOUT_MS = 2500;
-const API_CACHE_READ_TIMEOUT_MS = 1500;
+const API_CACHE_READ_TIMEOUT_MS = 5000;
 const API_CACHE_STALE_READ_MS = 2000;
 const MONGO_COOLDOWN_MS = 90 * 1000;
 /** Cache RAM — dùng ngay khi Mongo/API chậm (TTL 30 phút). */
@@ -315,10 +317,30 @@ async function purgeApiCacheIfBeforeWednesdayCycle(supermarket, keyword, locatio
 }
 
 /**
- * Đọc cache API — RAM trước, Mongo timeout ngắn; miss thì gọi API (scraper) ngay.
+ * Đọc cache — MongoDB trước, RAM sau; miss thì caller gọi RapidAPI.
  */
 async function tryReadApiCache(supermarket, keyword, location) {
   await purgeApiCacheIfBeforeWednesdayCycle(supermarket, keyword, location);
+
+  if (MONGODB_URI && !isMongoInCooldown()) {
+    try {
+      const payload = await withTimeout(
+        (async () => {
+          await connectMongo();
+          return readApiCacheWithFallback(supermarket, keyword, location);
+        })(),
+        API_CACHE_READ_TIMEOUT_MS,
+        'MongoDB cache read'
+      );
+      if (payload != null) {
+        const normalized = refreshStoreUrlsInRawList(supermarket, payload);
+        writeMemoryApiCache(supermarket, keyword, normalized, location);
+        return normalized;
+      }
+    } catch (err) {
+      console.warn(`  ⚠ MongoDB cache read failed (${supermarket}):`, err.message);
+    }
+  }
 
   const mem = readMemoryApiCache(supermarket, keyword, location);
   if (mem != null) {
@@ -326,28 +348,7 @@ async function tryReadApiCache(supermarket, keyword, location) {
     return refreshStoreUrlsInRawList(supermarket, mem);
   }
 
-  if (!MONGODB_URI || isMongoInCooldown()) return null;
-
-  try {
-    const payload = await withTimeout(
-      (async () => {
-        await connectMongo();
-        return readApiCache(supermarket, keyword, location);
-      })(),
-      API_CACHE_READ_TIMEOUT_MS,
-      'MongoDB cache read'
-    );
-    if (payload != null) {
-      const normalized = refreshStoreUrlsInRawList(supermarket, payload);
-      writeMemoryApiCache(supermarket, keyword, normalized, location);
-      return normalized;
-    }
-    return null;
-  } catch (err) {
-    console.warn(`  ⚠ Cache read skipped (${supermarket}):`, err.message);
-    mongo.enterCooldown();
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -368,7 +369,7 @@ async function tryReadStaleApiCache(supermarket, keyword, location) {
     const payload = await withTimeout(
       (async () => {
         await connectMongo();
-        return readApiCache(supermarket, keyword, location, { allowStale: true });
+        return readApiCacheWithFallback(supermarket, keyword, location, { allowStale: true });
       })(),
       API_CACHE_STALE_READ_MS,
       'MongoDB stale cache read'
@@ -605,6 +606,68 @@ async function readApiCache(supermarket, keyword, location, { allowStale = false
   }
   // Empty arrays are treated as cache miss so a bad write does not block forever.
   if (Array.isArray(doc.payload) && doc.payload.length === 0) return null;
+  return doc.payload;
+}
+
+/** Escape chuỗi dùng trong RegExp. */
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Đọc MongoDB: vị trí hiện tại → Sydney mặc định → bất kỳ vị trí nào (mới nhất).
+ */
+async function readApiCacheWithFallback(supermarket, keyword, location, options = {}) {
+  const exact = await readApiCache(supermarket, keyword, location, options);
+  if (exact != null) return exact;
+
+  const loc = location || getRequestLocation();
+  const isDefaultLoc =
+    loc.latitude === SYDNEY_DEFAULT_LOCATION.latitude &&
+    loc.longitude === SYDNEY_DEFAULT_LOCATION.longitude;
+  if (!isDefaultLoc) {
+    const sydneyHit = await readApiCache(
+      supermarket,
+      keyword,
+      SYDNEY_DEFAULT_LOCATION,
+      options
+    );
+    if (sydneyHit != null) {
+      console.log(`  💾 ${supermarket} cache hit (Sydney fallback): "${keyword}"`);
+      return sydneyHit;
+    }
+  }
+
+  const collection = getApiCacheCollection();
+  if (!collection) return null;
+
+  const trimmed = String(keyword || '').trim();
+  if (!trimmed) return null;
+
+  const doc = await collection
+    .find({
+      supermarket,
+      keyword: { $regex: new RegExp(`^${escapeRegex(trimmed)}$`, 'i') },
+    })
+    .sort({ updatedAt: -1 })
+    .limit(1)
+    .next();
+
+  if (!doc?.payload) return null;
+
+  if (isApiCacheBeforeCurrentPriceCycle(doc.updatedAt)) {
+    return null;
+  }
+  if (
+    !options.allowStale &&
+    doc.expiresAt &&
+    doc.expiresAt <= new Date()
+  ) {
+    return null;
+  }
+  if (Array.isArray(doc.payload) && doc.payload.length === 0) return null;
+
+  console.log(`  💾 ${supermarket} cache hit (keyword fallback): "${keyword}"`);
   return doc.payload;
 }
 
@@ -1679,7 +1742,11 @@ const SMART_MATCH_COOKED_PREPARED_HINTS = [
 ];
 
 /** Điểm tối thiểu để chấp nhận ghép cặp (tránh ghép bừa khi điểm âm). */
-const SMART_MATCH_MIN_PAIR_SCORE = 0.35;
+const SMART_MATCH_MIN_PAIR_SCORE = 0.55;
+/** Độ tương đồng Jaro-Winkler tối thiểu trên toàn tên — một từ chung không đủ. */
+const MIN_PAIR_NAME_SIMILARITY = 0.52;
+/** Rau/trái cây chỉ trùng một từ gốc (vd. "broccoli") cần sim cao hơn. */
+const MIN_FRESH_SHALLOW_TOKEN_SIMILARITY = 0.68;
 
 const PRODUCT_MATCHING_RULES = `You are a strict grocery price analyzer. When matching products between Coles and Woolworths, you MUST match raw ingredients with raw ingredients. Never match raw meat (e.g., chicken thigh fillets) with processed food (e.g., chicken burgers or nuggets), even if they share keywords. Always prioritize the alternative item that offers the lowest price per kilogram ($/kg) and matches the exact form of the user's intent.`;
 
@@ -3028,16 +3095,195 @@ const VARIETY_CONFLICTS = [
   ['full cream', 'light'],
 ];
 
+/**
+ * Từ qualifier — phải xuất hiện ở CẢ HAI tên hoặc KHÔNG tên nào.
+ * Ngăn ghép rau phương Tây ↔ biến thể Á/châu Á, organic ↔ thường, v.v.
+ */
+const MATCH_ASYMMETRIC_QUALIFIERS = [
+  'chinese broccoli',
+  'kai lan',
+  'gai lan',
+  'choy sum',
+  'bok choy',
+  'pak choy',
+  'free range',
+  'barn laid',
+  'chinese',
+  'asian',
+  'choy',
+  'sprouted',
+  'organic',
+  'broccolini',
+  'romanesco',
+  'baby',
+  'purple',
+  'wombok',
+  'continental',
+  'lebanese',
+  'english',
+  'persian',
+  'dutch',
+  'kent',
+  'sebago',
+  'truss',
+  'vine',
+  'snacking',
+].sort((a, b) => b.length - a.length);
+
+/** Đánh dấu dòng rau/trái cây chuyên biệt hoặc theo vùng — không ghép với generic cùng loài. */
+const PRODUCE_SPECIALIZATION_MARKERS = [
+  'chinese',
+  'asian',
+  'choy',
+  'choy sum',
+  'bok choy',
+  'gai lan',
+  'kai lan',
+  'broccolini',
+  'romanesco',
+  'sprouted',
+  'wombok',
+  'persian',
+  'lebanese',
+  'continental',
+  'kent',
+  'sebago',
+  'snacking',
+  'truss',
+  'vine',
+];
+
+const MATCH_STOP_WORDS = new Set([
+  'fresh',
+  'each',
+  'loose',
+  'per',
+  'pack',
+  'coles',
+  'woolworths',
+  'woolies',
+  'the',
+  'and',
+  'with',
+  'for',
+  'from',
+  'free',
+  'range',
+  'australian',
+  'aust',
+  'locally',
+  'grown',
+  'piece',
+  'bunch',
+  'tray',
+  'approx',
+  'whole',
+  'half',
+  'red',
+  'green',
+  'large',
+  'small',
+  'medium',
+]);
+
+function titleHasQualifier(nameNorm, qualifier) {
+  if (qualifier.includes(' ')) return nameNorm.includes(qualifier);
+  return haystackHasWord(nameNorm, qualifier);
+}
+
+function extractMatchQualifiers(name) {
+  const norm = normalizeNameForMatch(name);
+  if (!norm) return [];
+  const found = [];
+  for (const q of MATCH_ASYMMETRIC_QUALIFIERS) {
+    if (titleHasQualifier(norm, q)) found.push(q);
+  }
+  return found;
+}
+
+function matchQualifiersCompatible(nameA, nameB) {
+  const qA = extractMatchQualifiers(nameA);
+  const qB = extractMatchQualifiers(nameB);
+  const onlyA = qA.filter((q) => !qB.includes(q));
+  const onlyB = qB.filter((q) => !qA.includes(q));
+  if (onlyA.length || onlyB.length) {
+    return {
+      ok: false,
+      reason: `qualifier mismatch (only WW: [${onlyA.join(', ')}], only Coles: [${onlyB.join(', ')}])`,
+    };
+  }
+  return { ok: true };
+}
+
+function produceVariantConflict(nameA, nameB) {
+  if (!isFreshFoodCategory(nameA) || !isFreshFoodCategory(nameB)) return false;
+
+  const normA = normalizeNameForMatch(nameA);
+  const normB = normalizeNameForMatch(nameB);
+  const basesA = FRESH_FOOD_TOKENS.filter((token) => haystackHasWord(normA, token));
+  const basesB = FRESH_FOOD_TOKENS.filter((token) => haystackHasWord(normB, token));
+  const shared = basesA.filter((token) => basesB.includes(token));
+  if (!shared.length) return false;
+
+  const hasSpec = (norm) =>
+    PRODUCE_SPECIALIZATION_MARKERS.some((marker) => titleHasQualifier(norm, marker));
+  return hasSpec(normA) !== hasSpec(normB);
+}
+
+function extractSignificantMatchTokens(nameNorm) {
+  return nameNorm
+    .split(' ')
+    .filter((word) => word.length > 2 && !MATCH_STOP_WORDS.has(word) && !/^\d+$/.test(word));
+}
+
+function isShallowProduceTokenMatch(nameA, nameB) {
+  if (!isFreshFoodCategory(nameA) || !isFreshFoodCategory(nameB)) return false;
+
+  const normA = normalizeNameForMatch(nameA);
+  const normB = normalizeNameForMatch(nameB);
+  const tokensA = extractSignificantMatchTokens(normA);
+  const tokensB = extractSignificantMatchTokens(normB);
+  const shared = tokensA.filter((token) => tokensB.includes(token));
+  const produceShared = shared.filter((token) =>
+    FRESH_FOOD_TOKENS.some((ft) => token === ft || haystackHasWord(token, ft))
+  );
+  if (!produceShared.length) return false;
+
+  const sim = stringSimilarity.compareTwoStrings(normA, normB);
+  return produceShared.length <= 1 && shared.length <= 2 && sim < MIN_FRESH_SHALLOW_TOKEN_SIMILARITY;
+}
+
+function logMatchDecision(woolName, colesName, score, detail) {
+  const tag = typeof score === 'number' && score >= SMART_MATCH_MIN_PAIR_SCORE ? 'ACCEPT' : 'REJECT';
+  const scoreText = typeof score === 'number' ? score.toFixed(2) : 'N/A';
+  console.log(
+    `[Match:${tag}] score=${scoreText} | WW="${woolName}" ↔ Coles="${colesName}" | ${detail}`
+  );
+}
+
 function extractVarieties(name) {
   const lower = String(name).toLowerCase();
   return VARIETY_KEYWORDS.filter((keyword) => lower.includes(keyword));
 }
 
-/** Hai tên có cùng “dòng” sản phẩm (không Jasmine vs Basmati) */
+/** Hai tên có cùng “dòng” sản phẩm (không Jasmine vs Basmati, không Broccoli vs Chinese Broccoli) */
 function varietiesCompatible(nameA, nameB) {
+  if (!matchQualifiersCompatible(nameA, nameB).ok) return false;
+  if (produceVariantConflict(nameA, nameB)) return false;
+
   const vA = extractVarieties(nameA);
   const vB = extractVarieties(nameB);
-  if (!vA.length || !vB.length) return true;
+  if (!vA.length && !vB.length) return true;
+
+  if (!vA.length || !vB.length) {
+    const normA = normalizeNameForMatch(nameA);
+    const normB = normalizeNameForMatch(nameB);
+    const organicA = vA.includes('organic') || haystackHasWord(normA, 'organic');
+    const organicB = vB.includes('organic') || haystackHasWord(normB, 'organic');
+    if (organicA !== organicB) return false;
+    if (isFreshFoodCategory(nameA) && isFreshFoodCategory(nameB)) return false;
+    return true;
+  }
 
   for (const [left, right] of VARIETY_CONFLICTS) {
     const aHasLeft = vA.includes(left);
@@ -3127,10 +3373,16 @@ function scoreProductPair(woolInput, colesInput) {
     return 0;
   }
 
+  if (!matchQualifiersCompatible(woolName, colesName).ok) return 0;
+  if (produceVariantConflict(woolName, colesName)) return 0;
+
+  const nameSim = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
+  if (nameSim < MIN_PAIR_NAME_SIMILARITY) return 0;
+  if (isShallowProduceTokenMatch(woolName, colesName)) return 0;
+
   // Cùng cụm "pork belly" → ghép dù khác Roast / Slices / Rind On
   if (freshFoodCorePhraseMatch(woolName, colesName)) {
-    const base = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
-    return Math.min(Math.max(base, FRESH_PAIR_SCORE_FLOOR), 1);
+    return Math.min(Math.max(nameSim, FRESH_PAIR_SCORE_FLOOR), 1);
   }
 
   if (!varietiesCompatible(woolName, colesName)) return 0;
@@ -3138,7 +3390,7 @@ function scoreProductPair(woolInput, colesInput) {
   const sizeStatus = checkSizeCompatibility(woolName, colesName);
   if (sizeStatus === 'conflict') return 0;
 
-  let score = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
+  let score = nameSim;
 
   if (sizeStatus === 'mismatch_one_sided') {
     const freshLoose =
@@ -3421,21 +3673,58 @@ function smartMatchPriceWithinTwentyPercent(productA, productB) {
  * Bước 2 — Chấm điểm ghép 1 cặp Woolworths ↔ Coles (càng cao càng giống bản chất).
  * +2/modifier chung · -3 raw↔cooked · +1 giá gần nhau · cộng thêm độ tương đồng tên.
  */
-function scoreSmartMatchPair(woolProduct, colesProduct) {
+function scoreSmartMatchPair(woolProduct, colesProduct, opts = {}) {
   const woolName = resolveProductName(woolProduct);
   const colesName = resolveProductName(colesProduct);
   const woolNorm = normalizeNameForMatch(woolName);
   const colesNorm = normalizeNameForMatch(colesName);
-  if (!woolNorm || !colesNorm) return -999;
+  const debug = opts.debug ?? MATCH_DEBUG;
 
-  if (!areProductCategoriesCompatible(woolProduct, colesProduct)) return -999;
+  const reject = (reason) => {
+    if (debug) logMatchDecision(woolName, colesName, -999, reason);
+    return -999;
+  };
+
+  if (!woolNorm || !colesNorm) return reject('empty product name');
+
+  if (!areProductCategoriesCompatible(woolProduct, colesProduct)) {
+    return reject('incompatible product categories');
+  }
+
+  const qualifierCheck = matchQualifiersCompatible(woolName, colesName);
+  if (!qualifierCheck.ok) return reject(qualifierCheck.reason);
+
+  if (produceVariantConflict(woolName, colesName)) {
+    return reject('produce variant conflict (generic vs regional/specialized line)');
+  }
+
+  const nameSim = stringSimilarity.compareTwoStrings(woolNorm, colesNorm);
+  if (nameSim < MIN_PAIR_NAME_SIMILARITY) {
+    return reject(
+      `name similarity ${nameSim.toFixed(2)} below minimum ${MIN_PAIR_NAME_SIMILARITY}`
+    );
+  }
+
+  if (isShallowProduceTokenMatch(woolName, colesName)) {
+    return reject(
+      `shallow produce token overlap (sim=${nameSim.toFixed(2)} < ${MIN_FRESH_SHALLOW_TOKEN_SIMILARITY})`
+    );
+  }
+
+  if (!varietiesCompatible(woolName, colesName)) {
+    return reject('variety or botanical line incompatible');
+  }
 
   let score = 0;
+  let modBonus = 0;
 
   const woolMods = extractSmartMatchModifiers(woolNorm);
   const colesMods = extractSmartMatchModifiers(colesNorm);
   for (const mod of woolMods) {
-    if (colesMods.includes(mod)) score += 2;
+    if (colesMods.includes(mod)) {
+      score += 2;
+      modBonus += 2;
+    }
   }
 
   const woolRaw = nameNormHasAnyHint(woolNorm, SMART_MATCH_RAW_MEAT_HINTS);
@@ -3447,27 +3736,56 @@ function scoreSmartMatchPair(woolProduct, colesProduct) {
     nameNormHasAnyHint(colesNorm, SMART_MATCH_COOKED_PREPARED_HINTS) ||
     nameSuggestsProcessedPreparedFood(colesName);
 
+  let rawCookedAdj = 0;
   if ((woolRaw && !woolCooked && colesCooked) || (colesRaw && !colesCooked && woolCooked)) {
     score -= 3;
+    rawCookedAdj = -3;
   } else if (woolCooked !== colesCooked && (woolCooked || colesCooked)) {
     score -= 3;
+    rawCookedAdj = -3;
   }
 
+  let priceBonus = 0;
   if (smartMatchPriceWithinTwentyPercent(woolProduct, colesProduct)) {
     score += 1;
+    priceBonus = 1;
   }
 
-  score += stringSimilarity.compareTwoStrings(woolNorm, colesNorm) * 0.75;
+  const nameSimBonus = nameSim * 0.75;
+  score += nameSimBonus;
 
+  let freshPhraseBonus = 0;
   if (freshFoodCorePhraseMatch(woolName, colesName)) {
     score += 1.5;
+    freshPhraseBonus = 1.5;
   }
 
   const sizeStatus = checkSizeCompatibility(woolName, colesName);
-  if (sizeStatus === 'conflict') score -= 4;
-  else if (sizeStatus === 'ok') score += 0.5;
+  let sizeAdj = 0;
+  if (sizeStatus === 'conflict') {
+    score -= 4;
+    sizeAdj = -4;
+  } else if (sizeStatus === 'ok') {
+    score += 0.5;
+    sizeAdj = 0.5;
+  }
 
-  if (!varietiesCompatible(woolName, colesName)) score -= 2;
+  if (debug) {
+    logMatchDecision(
+      woolName,
+      colesName,
+      score,
+      [
+        `nameSim=${nameSim.toFixed(2)} (+${nameSimBonus.toFixed(2)})`,
+        `mods=+${modBonus}`,
+        `raw/cooked=${rawCookedAdj}`,
+        `price=+${priceBonus}`,
+        `freshPhrase=+${freshPhraseBonus}`,
+        `size=${sizeStatus} (${sizeAdj >= 0 ? '+' : ''}${sizeAdj})`,
+        `threshold=${SMART_MATCH_MIN_PAIR_SCORE}`,
+      ].join(', ')
+    );
+  }
 
   return score;
 }
@@ -3511,14 +3829,28 @@ function buildSmartComparePairs(woolworthsOptions, colesOptions) {
       }
     });
 
-    if (bestIdx < 0) continue;
+    if (bestIdx < 0) {
+      if (MATCH_DEBUG) {
+        console.log(
+          `[Match:PAIR] no Coles match for WW="${resolveProductName(woolItem)}" (all candidates below ${SMART_MATCH_MIN_PAIR_SCORE})`
+        );
+      }
+      continue;
+    }
 
     usedColesIndexes.add(bestIdx);
     usedWoolKeys.add(productStableKey(woolItem));
 
+    const colesPick = colesOptions[bestIdx];
+    if (MATCH_DEBUG) {
+      console.log(
+        `[Match:PAIR] paired score=${bestScore.toFixed(2)} | WW="${resolveProductName(woolItem)}" ↔ Coles="${resolveProductName(colesPick)}"`
+      );
+    }
+
     pairs.push({
       woolworths: woolItem,
-      coles: colesOptions[bestIdx],
+      coles: colesPick,
       matchScore: Number(bestScore.toFixed(2)),
     });
   }
@@ -4660,16 +4992,16 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
   const apiTimeout = fast ? COMPARE_API_TIMEOUT_MS : API_TIMEOUT_MS;
   const maxRetries = fast ? COMPARE_API_MAX_RETRIES : API_MAX_RETRIES;
 
-  if (!RAPIDAPI_KEY) {
-    throw new Error(
-      'RAPIDAPI_KEY is not configured. Add it to .env or Vercel environment variables.'
-    );
-  }
-
   const cached = await tryReadApiCache(supermarket, query, location);
   if (cached != null) {
     console.log(`  💾 ${supermarket} cache hit: "${query}" @ ${buildLocationSegment(location)}`);
     return cached;
+  }
+
+  if (!RAPIDAPI_KEY) {
+    throw new Error(
+      'No cached results and RAPIDAPI_KEY is not configured. Add it to .env or Vercel environment variables.'
+    );
   }
 
   let storeIds = opts.storeIds || { colesStoreId: null, woolworthsStoreId: null };
@@ -4900,10 +5232,10 @@ app.get('/api/compare', async (req, res) => {
     `\n🔎 Searching: ${keywords.map((k) => `"${k}"`).join(', ')} @ ${location.latitude}, ${location.longitude} (${location.source})`
   );
 
-  if (!RAPIDAPI_KEY) {
+  if (!RAPIDAPI_KEY && !MONGODB_URI) {
     return res.status(503).json({
       error:
-        'RAPIDAPI_KEY is not configured. Add it to .env (local) or Vercel environment variables.',
+        'Neither MongoDB cache nor RAPIDAPI_KEY is configured. Add MONGODB_URI and/or RAPIDAPI_KEY to .env / Vercel.',
       storeErrors: { coles: null, woolworths: null },
     });
   }
@@ -5364,7 +5696,12 @@ module.exports.__matchingTest__ = {
   filterProductsForSearchIntent,
   filterSearchNoiseProducts,
   scoreSmartMatchPair,
+  scoreProductPair,
   buildSmartComparePairs,
   buildAlignedCompareMatrix,
   getProductComparablePricePerKg,
+  matchQualifiersCompatible,
+  produceVariantConflict,
+  isShallowProduceTokenMatch,
+  varietiesCompatible,
 };
