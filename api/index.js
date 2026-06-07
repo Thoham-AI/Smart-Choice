@@ -28,6 +28,15 @@ const TERMS_HTML_PATH = path.join(PUBLIC_DIR, 'terms', 'index.html');
 // ============================================================
 const RAPIDAPI_KEY =
   process.env.RAPIDAPI_KEY || process.env.RAPID_API_KEY || '';
+/** Coles mobile app search API (barcode + keyword) — override via env in production if needed. */
+const COLES_MOBILE_API_KEY =
+  process.env.COLES_API_KEY || '046bc0d4-3854-481f-80dc-85f9e846503d';
+const COLES_MOBILE_API_SECRET =
+  process.env.COLES_API_SECRET || 'e6ab96ff-453b-45ba-a2be-ae8d7c12cadf';
+const COLES_MOBILE_SEARCH_URL =
+  'https://api.coles.com.au/customer/v1/coles/products/search';
+const BARCODE_DIRECT_API_TIMEOUT_MS = 12000;
+const BARCODE_NAME_LOOKUP_TIMEOUT_MS = 8000;
 const COLES_HOST      = 'coles-australia-full-catalog-pricing-intelligence-api.p.rapidapi.com';
 const WOOLWORTHS_HOST = 'woolworths-australia-product-category-api.p.rapidapi.com';
 /** Supported supermarkets for compare + AI cart. */
@@ -1792,24 +1801,80 @@ function findProductByBarcodeWithFallback(rawList, barcode, supermarket) {
   return { product: null, matchKind: null };
 }
 
-async function fetchBarcodeProductForStore(supermarket, barcode, storeIds) {
+async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, options = {}) {
   const variants = barcodeSearchVariants(barcode);
   let lastRawList = [];
 
-  for (const variant of variants) {
-    const rawList = await fetchStoreRawList(supermarket, variant, { storeIds });
+  const tryMatchRawList = (rawList, sourceLabel) => {
+    if (!Array.isArray(rawList) || !rawList.length) return null;
     lastRawList = rawList;
     console.log(
-      `  📷 ${supermarket} barcode API search term="${variant}" → ${rawList.length} result(s)`
+      `  📷 ${supermarket} barcode ${sourceLabel} → ${rawList.length} result(s)`
     );
-    if (rawList.length) logBarcodeRawSample(supermarket, rawList);
+    logBarcodeRawSample(supermarket, rawList);
 
     const { product, matchKind } = findProductByBarcodeWithFallback(rawList, barcode, supermarket);
-    if (product) {
-      console.log(
-        `  📷 ${supermarket} barcode HIT (${matchKind}): "${product.name}" @ $${product.price ?? 'n/a'}`
+    if (!product) return null;
+
+    console.log(
+      `  📷 ${supermarket} barcode HIT (${sourceLabel}/${matchKind}): "${product.name}" @ $${product.price ?? 'n/a'}`
+    );
+    return { product, rawList, matchKind: `${sourceLabel}_${matchKind}`, error: null };
+  };
+
+  // 1. Direct supermarket APIs (barcode as search term — bypasses Mongo/RapidAPI cache)
+  for (const variant of variants) {
+    const directRaw = await fetchDirectStoreRawListForBarcode(
+      supermarket,
+      variant,
+      storeIds
+    );
+    const hit = tryMatchRawList(directRaw, 'direct_api');
+    if (hit) {
+      scheduleWriteApiCache(supermarket, variant, directRaw, getRequestLocation());
+      return hit;
+    }
+  }
+
+  // 2. RapidAPI barcode search (force fresh — avoid stale empty cache from prior misses)
+  for (const variant of variants) {
+    try {
+      const rawList = await fetchStoreRawList(supermarket, variant, {
+        storeIds,
+        forceRefresh: true,
+      });
+      const hit = tryMatchRawList(rawList, 'rapidapi');
+      if (hit) return hit;
+    } catch (error) {
+      console.warn(`  ⚠ ${supermarket} RapidAPI barcode skipped:`, error.message);
+    }
+  }
+
+  // 3. Product-name search (Open Food Facts → text search on both chains)
+  const productName = String(options.productName || '').trim();
+  if (productName) {
+    for (const variant of variants) {
+      const directRaw = await fetchDirectStoreRawListForBarcode(
+        supermarket,
+        productName,
+        storeIds
       );
-      return { product, rawList, matchKind, error: null };
+      const directHit = tryMatchRawList(directRaw, 'direct_name');
+      if (directHit) {
+        scheduleWriteApiCache(supermarket, variant, directRaw, getRequestLocation());
+        return directHit;
+      }
+    }
+
+    try {
+      const rawList = await fetchStoreRawList(supermarket, productName, {
+        storeIds,
+        forceRefresh: true,
+      });
+      const hit = tryMatchRawList(rawList, 'rapidapi_name');
+      if (hit) return hit;
+    } catch (error) {
+      console.warn(`  ⚠ ${supermarket} RapidAPI name fallback skipped:`, error.message);
     }
   }
 
@@ -1817,6 +1882,85 @@ async function fetchBarcodeProductForStore(supermarket, barcode, storeIds) {
     `  📷 ${supermarket} barcode MISS for ${barcode} (tried ${variants.join(', ')}; last batch ${lastRawList.length} items)`
   );
   return { product: null, rawList: lastRawList, matchKind: null, error: null };
+}
+
+/** Resolve a human-readable product name from public barcode databases (Open Food Facts). */
+async function lookupBarcodeProductName(barcode) {
+  const variants = barcodeSearchVariants(barcode);
+  for (const variant of variants) {
+    try {
+      const response = await axios.get(
+        `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(variant)}.json`,
+        {
+          timeout: BARCODE_NAME_LOOKUP_TIMEOUT_MS,
+          headers: { Accept: 'application/json', 'User-Agent': 'ShoppingSmart/1.0' },
+        }
+      );
+      const product = response.data?.product;
+      if (!product || product.status === 0 || product.status === '0') continue;
+
+      const brand = String(product.brands || product.brand_owner || '')
+        .split(',')[0]
+        .trim();
+      const title = String(
+        product.product_name || product.product_name_en || product.generic_name || ''
+      ).trim();
+      const quantity = String(product.quantity || product.product_quantity || '').trim();
+
+      let name = title;
+      if (brand && title && !title.toLowerCase().includes(brand.toLowerCase())) {
+        name = `${brand} ${title}`;
+      }
+      if (quantity && name && !name.toLowerCase().includes(quantity.toLowerCase())) {
+        name = `${name} ${quantity}`;
+      }
+
+      name = name.replace(/\s+/g, ' ').trim();
+      if (name.length >= 3) {
+        console.log(`  📷 Barcode name lookup (Open Food Facts): "${name}"`);
+        return name;
+      }
+    } catch (error) {
+      console.warn('  ⚠ Open Food Facts lookup failed:', error.message);
+    }
+  }
+  return null;
+}
+
+/** Persist scanned barcode hits so the next scan can match from MongoDB price_history. */
+async function seedScannedBarcodeToMongo(barcode, colesItem, woolItem) {
+  const normalized = normalizeBarcode(barcode);
+  if (!normalized) return;
+
+  const watchId = `barcode::${normalized}`;
+  const seeds = [];
+
+  const queueSeed = (item, supermarket) => {
+    if (!item || item.price == null || Number(item.price) <= 0) return;
+    const meta = {
+      productId: item.productId || null,
+      barcode: normalized,
+    };
+    seeds.push(
+      recordPriceHistoryPoint(watchId, supermarket, item.price, item.name, meta)
+    );
+    if (item.productId) {
+      seeds.push(
+        recordPriceHistoryPoint(item.productId, supermarket, item.price, item.name, meta)
+      );
+    }
+  };
+
+  queueSeed(colesItem, 'Coles');
+  queueSeed(woolItem, 'Woolworths');
+
+  if (!seeds.length) return;
+
+  const results = await Promise.allSettled(seeds);
+  const saved = results.filter((r) => r.status === 'fulfilled').length;
+  if (saved) {
+    console.log(`  💾 Barcode ${normalized} seeded to price_history (${saved} point(s))`);
+  }
 }
 
 /**
@@ -2812,7 +2956,11 @@ function normalizeItem(raw, supermarket, opts = {}) {
   const searchKeyword = deriveSearchKeyword(name);
   const barcodeSet = collectBarcodesFromRaw(raw);
   const barcodes = [...barcodeSet];
-  const barcode = barcodes[0] || null;
+  const scannedBarcode = opts.scannedBarcode ? normalizeBarcode(opts.scannedBarcode) : '';
+  if (scannedBarcode && !barcodes.includes(scannedBarcode)) {
+    barcodes.unshift(scannedBarcode);
+  }
+  const barcode = barcodes[0] || scannedBarcode || null;
 
   const categoryMeta = buildCategoryMetaFromRaw(raw, name);
 
@@ -5529,6 +5677,27 @@ function buildStoreSearchParams(supermarket, query, location, storeIds) {
 // 5b. HÀM GỌI COLES / WOOLWORTHS RAPIDAPI (+ fallback WW trực tiếp)
 // ============================================================
 
+/** Map one Woolworths UI API product object → raw list item (includes Barcode field). */
+function mapWoolworthsDirectItemToRaw(item) {
+  const price = parsePrice(item.InstorePrice ?? item.Price);
+  if (price == null) return null;
+
+  const barcodeDigits = normalizeBarcode(item.Barcode || item.Ean || item.Gtin);
+  return {
+    name: item.DisplayName || item.Name,
+    price,
+    stockcode: item.Stockcode ?? item.StockCode,
+    StockCode: item.Stockcode ?? item.StockCode,
+    barcode: barcodeDigits || item.Barcode || null,
+    barcodes: barcodeDigits ? [barcodeDigits] : item.Barcode ? [item.Barcode] : [],
+    size: item.PackageSize || item.Unit || null,
+    image: item.MediumImageFile || item.SmallImageFile || null,
+    brand: item.Brand || item.AdditionalAttributes?.brand || null,
+    was_price: parsePrice(item.WasPrice),
+    is_on_special: item.IsOnSpecial === true || item.InstoreIsOnSpecial === true,
+  };
+}
+
 /** Fallback khi RapidAPI Woolworths timeout — gọi API công khai của Woolworths AU. */
 async function fetchWoolworthsDirectApiRawList(query, limit = RESULT_LIMIT) {
   try {
@@ -5540,7 +5709,7 @@ async function fetchWoolworthsDirectApiRawList(query, limit = RESULT_LIMIT) {
         Location: `/shop/search/products?searchTerm=${query}`,
         PageNumber: 1,
         PageSize: limit,
-        SearchTerm: query,
+        SearchTerm: String(query),
         SortType: 'TraderRelevance',
         IsHideEverydayMarketProducts: false,
         IsRegisteredRewardCardPromotion: null,
@@ -5558,23 +5727,15 @@ async function fetchWoolworthsDirectApiRawList(query, limit = RESULT_LIMIT) {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         },
-        timeout: 18000,
+        timeout: BARCODE_DIRECT_API_TIMEOUT_MS,
       }
     );
 
     const rawList = [];
     for (const group of response.data?.Products || []) {
       for (const item of group?.Products || []) {
-        const price = parsePrice(item.Price);
-        if (price == null) continue;
-        rawList.push({
-          name: item.DisplayName || item.Name,
-          price,
-          stockcode: item.Stockcode ?? item.StockCode,
-          StockCode: item.Stockcode ?? item.StockCode,
-          size: item.PackageSize || item.Unit || null,
-          image: item.MediumImageFile || item.SmallImageFile || null,
-        });
+        const mapped = mapWoolworthsDirectItemToRaw(item);
+        if (mapped) rawList.push(mapped);
         if (rawList.length >= limit) return rawList;
       }
     }
@@ -5583,6 +5744,110 @@ async function fetchWoolworthsDirectApiRawList(query, limit = RESULT_LIMIT) {
     console.warn('  ⚠ Woolworths direct API fallback failed:', error?.message || error);
     return null;
   }
+}
+
+function extractColesMobileApiPrice(result) {
+  const promos = result?.Promotions;
+  if (Array.isArray(promos)) {
+    for (const promo of promos) {
+      const price = parsePrice(promo?.Price ?? promo?.price ?? promo?.SalePrice);
+      if (price != null) return price;
+    }
+  }
+  return (
+    parsePrice(result?.Price) ??
+    parsePrice(result?.price) ??
+    parsePrice(result?.CurrentPrice)
+  );
+}
+
+/** Map Coles mobile search API result → raw list item. */
+function mapColesMobileResultToRaw(result) {
+  const price = extractColesMobileApiPrice(result);
+  if (price == null) return null;
+
+  const slug =
+    result?.SeoToken ||
+    result?.UrlSlug ||
+    result?.Slug ||
+    result?.slug ||
+    null;
+  const barcodeDigits = normalizeBarcode(
+    result?.Barcode ?? result?.Ean ?? result?.Gtin ?? result?.Apn
+  );
+
+  return {
+    name: buildDisplayName(result),
+    brand: result?.Brand || result?.brand || null,
+    size: result?.Size || result?.size || null,
+    price,
+    slug: slug ? String(slug).replace(/^\//, '') : null,
+    barcode: barcodeDigits || null,
+    barcodes: barcodeDigits ? [barcodeDigits] : [],
+    image:
+      result?.ImageUrl ||
+      result?.imageUrl ||
+      result?.ThumbnailUrl ||
+      result?.Images?.[0] ||
+      null,
+    is_on_special: Array.isArray(result?.Promotions) && result.Promotions.length > 0,
+  };
+}
+
+/** Coles mobile app search API — supports barcode digits and product names. */
+async function fetchColesDirectApiRawList(query, storeId, limit = RESULT_LIMIT) {
+  const q = String(query || '').trim();
+  if (!q) return null;
+
+  try {
+    const response = await axios.get(COLES_MOBILE_SEARCH_URL, {
+      params: {
+        q,
+        limit,
+        start: 0,
+        storeId: storeId || '7716',
+        type: 'SKU',
+      },
+      headers: {
+        Accept: '*/*',
+        'Accept-Language': 'en-AU;q=1',
+        'User-Agent': 'Shopmate/3.4.1 (iPhone; iOS 17.0; Scale/3.00)',
+        'X-Coles-API-Key': COLES_MOBILE_API_KEY,
+        'X-Coles-API-Secret': COLES_MOBILE_API_SECRET,
+      },
+      timeout: BARCODE_DIRECT_API_TIMEOUT_MS,
+    });
+
+    const results = response.data?.Results || response.data?.results || [];
+    const rawList = [];
+    for (const row of results) {
+      const mapped = mapColesMobileResultToRaw(row);
+      if (mapped) rawList.push(mapped);
+      if (rawList.length >= limit) break;
+    }
+    return rawList;
+  } catch (error) {
+    console.warn('  ⚠ Coles direct API fallback failed:', error?.response?.status || error?.message);
+    return null;
+  }
+}
+
+/** Direct chain API lookup for barcode scans (Woolworths UI + Coles mobile). */
+async function fetchDirectStoreRawListForBarcode(supermarket, query, storeIds) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+
+  if (supermarket === 'Woolworths') {
+    const raw = await fetchWoolworthsDirectApiRawList(q, RESULT_LIMIT);
+    return Array.isArray(raw) ? raw : [];
+  }
+
+  if (supermarket === 'Coles') {
+    const raw = await fetchColesDirectApiRawList(q, storeIds?.colesStoreId, RESULT_LIMIT);
+    return Array.isArray(raw) ? raw : [];
+  }
+
+  return [];
 }
 
 /** Gọi search API và trả về mảng sản phẩm thô (dùng cho khớp barcode) */
@@ -5595,7 +5860,9 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
   const apiTimeout = fast ? COMPARE_API_TIMEOUT_MS : API_TIMEOUT_MS;
   const maxRetries = fast ? COMPARE_API_MAX_RETRIES : API_MAX_RETRIES;
 
-  const cached = await tryReadApiCache(supermarket, query, location);
+  const cached = opts.forceRefresh
+    ? null
+    : await tryReadApiCache(supermarket, query, location);
   if (cached != null) {
     console.log(`  💾 ${supermarket} cache hit: "${query}" @ ${buildLocationSegment(location)}`);
     return cached;
@@ -5972,13 +6239,16 @@ app.get('/api/compare', async (req, res) => {
 
 // ============================================================
 // 7a. QUÉT BARCODE: GET /api/compare/barcode?barcode=...
+//     Alias: GET /api/scan?barcode=...
 // ============================================================
 /**
  * Tìm sản phẩm theo mã vạch (không theo tên):
- * - Gọi search API với chuỗi barcode (WW/Coles hỗ trợ tìm theo barcode)
- * - Lọc kết quả có field barcode khớp chính xác
+ * 1. Direct Woolworths UI + Coles mobile APIs (barcode as search term)
+ * 2. RapidAPI search fallback
+ * 3. Open Food Facts product name → text search on both chains
+ * 4. Seed MongoDB price_history on hit
  */
-app.get('/api/compare/barcode', async (req, res) => {
+async function handleBarcodeScanRequest(req, res) {
   const barcode = normalizeBarcode(req.query.barcode);
 
   if (!barcode || barcode.length < 8) {
@@ -6010,9 +6280,14 @@ app.get('/api/compare/barcode', async (req, res) => {
     `  📷 Store IDs: Coles=${storeIds.colesStoreName || storeIds.colesStoreId || 'n/a'} | Woolworths=${storeIds.woolworthsStoreName || storeIds.woolworthsStoreId || 'n/a'}`
   );
 
-  const safeFetchRaw = async (supermarket) => {
+  const safeFetchRaw = async (supermarket, options = {}) => {
     try {
-      const result = await fetchBarcodeProductForStore(supermarket, barcode, storeIds);
+      const result = await fetchBarcodeProductForStore(
+        supermarket,
+        barcode,
+        storeIds,
+        options
+      );
       return { product: result.product, error: null, matchKind: result.matchKind };
     } catch (error) {
       if (shouldSoftFailStoreRawList(supermarket)) {
@@ -6025,26 +6300,26 @@ app.get('/api/compare/barcode', async (req, res) => {
     }
   };
 
-  const [colesSettled, woolSettled] = await Promise.allSettled([
+  let [colesResult, woolResult] = await Promise.all([
     safeFetchRaw('Coles'),
     safeFetchRaw('Woolworths'),
   ]);
 
-  const colesResult =
-    colesSettled.status === 'fulfilled'
-      ? colesSettled.value
-      : { product: null, error: formatStoreError('Coles', colesSettled.reason), matchKind: null };
-  const woolResult =
-    woolSettled.status === 'fulfilled'
-      ? woolSettled.value
-      : {
-          product: null,
-          error: formatStoreError('Woolworths', woolSettled.reason),
-          matchKind: null,
-        };
+  let colesItem = colesResult.product;
+  let woolItem = woolResult.product;
 
-  const colesItem = colesResult.product;
-  const woolItem = woolResult.product;
+  if (!colesItem && !woolItem) {
+    const productName = await lookupBarcodeProductName(barcode);
+    if (productName) {
+      console.log(`  📷 Retrying barcode lookup via product name: "${productName}"`);
+      [colesResult, woolResult] = await Promise.all([
+        safeFetchRaw('Coles', { productName }),
+        safeFetchRaw('Woolworths', { productName }),
+      ]);
+      colesItem = colesResult.product;
+      woolItem = woolResult.product;
+    }
+  }
 
   if (!colesItem && !woolItem) {
     console.log(`  📷 Barcode lookup FAILED — no match at either store for ${barcode}\n`);
@@ -6057,6 +6332,8 @@ app.get('/api/compare/barcode', async (req, res) => {
       },
     });
   }
+
+  await seedScannedBarcodeToMongo(barcode, colesItem, woolItem);
 
   const colesItems = colesItem ? [colesItem] : [];
   const woolworthsItems = woolItem ? [woolItem] : [];
@@ -6088,7 +6365,10 @@ app.get('/api/compare/barcode', async (req, res) => {
     },
     nearestStores,
   });
-});
+}
+
+app.get('/api/compare/barcode', handleBarcodeScanRequest);
+app.get('/api/scan', handleBarcodeScanRequest);
 
 // ============================================================
 // 7b. AI SHOPPING LIST: POST /api/analyze-prompt
