@@ -14,9 +14,9 @@ const express = require('express');
 const axios   = require('axios');
 const cors    = require('cors');
 const { AsyncLocalStorage } = require('async_hooks');
-const { MongoClient } = require('mongodb');
 const OpenAI = require('openai');
 const stringSimilarity = require('string-similarity');
+const mongo = require('../lib/mongodb');
 
 /** Thư mục front-end tĩnh: ../public (tương đối với api/index.js) */
 const PUBLIC_DIR = path.join(__dirname, '../public');
@@ -81,8 +81,7 @@ const openaiClient = process.env.OPENAI_API_KEY
 // ============================================================
 // 1b. MONGODB – API CACHE (database from URI path, default shoppingsmart)
 // ============================================================
-const MONGODB_URI = String(process.env.MONGODB_URI || '').trim();
-const DEFAULT_DB_NAME = 'shoppingsmart';
+const MONGODB_URI = mongo.getUri();
 const API_CACHE_COLLECTION = 'api_cache';
 /**
  * Cache tìm kiếm siêu thị (MongoDB native driver, KHÔNG dùng Mongoose model):
@@ -109,87 +108,18 @@ const AU_PRICE_CYCLE_TIMEZONE = 'Australia/Sydney';
 /** Ngưỡng $/kg — trên ngưỡng này thường là lỗi chia khối lượng (ví dụ gà ~$50+/kg). */
 const MAX_SANE_PRICE_PER_KG = 50;
 
-let mongoClient = null;
-let mongoDb = null;
-let mongoDbName = DEFAULT_DB_NAME;
-let mongoConnectPromise = null;
-/** Sau lỗi Mongo — bỏ qua kết nối một lúc để search vẫn chạy (RAM cache + API). */
-let mongoCooldownUntil = 0;
 /** Cache tìm kiếm trong RAM (supermarket:keyword:lat,lng → payload). */
 const memoryApiCache = new Map();
 
-/**
- * Parse database name from MongoDB URI path (e.g. ...mongodb.net/shoppingsmart?appName=...).
- * Falls back to "shoppingsmart" when the URI has no database segment.
- */
-function parseDatabaseNameFromUri(uri) {
-  if (!uri) return DEFAULT_DB_NAME;
-  try {
-    const normalized = uri
-      .replace(/^mongodb\+srv:\/\//i, 'https://')
-      .replace(/^mongodb:\/\//i, 'https://');
-    const url = new URL(normalized);
-    const segment = decodeURIComponent(
-      (url.pathname || '').replace(/^\//, '').split('/')[0] || ''
-    ).trim();
-    return segment || DEFAULT_DB_NAME;
-  } catch {
-    return DEFAULT_DB_NAME;
-  }
-}
-
-/** Lazy singleton MongoDB connection (safe for local + serverless cold starts). */
 async function connectMongo() {
-  if (!MONGODB_URI) return null;
-  if (isMongoInCooldown()) return null;
-  if (mongoDb) return mongoDb;
-  if (mongoConnectPromise) return mongoConnectPromise;
-
-  mongoConnectPromise = withTimeout(
-    (async () => {
-    mongoDbName = parseDatabaseNameFromUri(MONGODB_URI);
-    mongoClient = new MongoClient(MONGODB_URI, {
-      serverSelectionTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
-      connectTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
-      socketTimeoutMS: 12000,
-    });
-    await mongoClient.connect();
-    mongoDb = mongoClient.db(mongoDbName);
-    await mongoDb.command({ ping: 1 });
-    await mongoDb.collection(API_CACHE_COLLECTION).createIndex(
-      { expiresAt: 1 },
-      { expireAfterSeconds: 0, name: 'api_cache_ttl' }
-    );
-    await mongoDb.collection(PRICE_HISTORY_COLLECTION).createIndex(
-      { watchId: 1, supermarket: 1 },
-      { name: 'price_history_watch_store' }
-    );
-    return mongoDb;
-    })(),
-    MONGO_CONNECT_TIMEOUT_MS,
-    'MongoDB connect'
-  );
-
-  try {
-    return await mongoConnectPromise;
-  } catch (error) {
-    mongoConnectPromise = null;
-    if (mongoClient) {
-      try {
-        await mongoClient.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    mongoClient = null;
-    mongoDb = null;
-    mongoCooldownUntil = Date.now() + MONGO_COOLDOWN_MS;
-    throw error;
-  }
+  return mongo.connectMongo({
+    apiCacheCollection: API_CACHE_COLLECTION,
+    priceHistoryCollection: PRICE_HISTORY_COLLECTION,
+  });
 }
 
 function isMongoInCooldown() {
-  return Date.now() < mongoCooldownUntil;
+  return mongo.isInCooldown();
 }
 
 /**
@@ -317,16 +247,19 @@ function writeMemoryApiCache(supermarket, keyword, payload, location) {
 }
 
 function getApiCacheCollection() {
+  const mongoDb = mongo.getDb();
   if (!mongoDb) return null;
   return mongoDb.collection(API_CACHE_COLLECTION);
 }
 
 function getPriceHistoryCollection() {
+  const mongoDb = mongo.getDb();
   if (!mongoDb) return null;
   return mongoDb.collection(PRICE_HISTORY_COLLECTION);
 }
 
 function getSiteStatsCollection() {
+  const mongoDb = mongo.getDb();
   if (!mongoDb) return null;
   return mongoDb.collection(SITE_STATS_COLLECTION);
 }
@@ -412,7 +345,7 @@ async function tryReadApiCache(supermarket, keyword, location) {
     return null;
   } catch (err) {
     console.warn(`  ⚠ Cache read skipped (${supermarket}):`, err.message);
-    mongoCooldownUntil = Date.now() + MONGO_COOLDOWN_MS;
+    mongo.enterCooldown();
     return null;
   }
 }
@@ -702,7 +635,7 @@ async function initMongoForLocalStartup() {
     return;
   }
   await connectMongo();
-  console.log(`Connected successfully to Database: ${mongoDbName}`);
+  console.log(`Connected successfully to Database: ${mongo.getDatabaseName()}`);
 }
 
 // ============================================================
@@ -5399,9 +5332,9 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     openaiConfigured: Boolean(openaiClient),
-    mongoConfigured: Boolean(MONGODB_URI),
-    mongoConnected: Boolean(mongoDb),
-    database: mongoDb ? mongoDbName : null,
+    mongoConfigured: mongo.isConfigured(),
+    mongoConnected: mongo.isConnected(),
+    database: mongo.isConnected() ? mongo.getDatabaseName() : null,
     apiCacheCollection: API_CACHE_COLLECTION,
     siteStatsCollection: SITE_STATS_COLLECTION,
   });
