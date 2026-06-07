@@ -4,17 +4,17 @@
  */
 
 (function initShoppingSmartApp() {
-  /** Active Chart.js instances keyed by watchlist entry id (destroy before redraw). */
-  const watchlistChartRegistry = new Map();
+  /** Active Chart.js instances keyed by chart id (destroy before redraw). */
+  const priceChartRegistry = new Map();
 
-  /** Open accordion card id (only one chart open at a time on small screens). */
-  let openWatchlistChartId = null;
+  /** Open accordion chart id (only one chart open at a time on small screens). */
+  let openPriceChartId = null;
 
-  function escapeWatchIdForSelector(watchId) {
+  function escapeChartIdForSelector(chartId) {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-      return CSS.escape(String(watchId));
+      return CSS.escape(String(chartId));
     }
-    return String(watchId).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return String(chartId).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }
 
   // --- Chart theme (light / dark) ---
@@ -38,15 +38,19 @@
   // --- Price history API ---
 
   /**
-   * Fetch stored price history for a watchlist product.
-   * @param {string} watchId
-   * @returns {Promise<{ series: Array<{ supermarket: string, points: Array<{ date: string, price: number }> }> }>}
+   * Fetch stored price history for a product (watchlist id, productId, or barcode).
+   * @param {{ watchId?: string, productId?: string, barcode?: string }} lookup
    */
-  async function fetchPriceHistory(watchId) {
+  async function fetchPriceHistory(lookup = {}) {
+    const params = new URLSearchParams();
+    if (lookup.watchId) params.set('id', lookup.watchId);
+    if (lookup.productId) params.set('productId', lookup.productId);
+    if (lookup.barcode) params.set('barcode', lookup.barcode);
+
+    const query = params.toString();
+    const path = `/api/price-history?${query}`;
     const url =
-      typeof buildApiUrl === 'function'
-        ? buildApiUrl(`/api/watchlist/price-history?watchId=${encodeURIComponent(watchId)}`)
-        : `${API_BASE}/api/watchlist/price-history?watchId=${encodeURIComponent(watchId)}`;
+      typeof buildApiUrl === 'function' ? buildApiUrl(path) : `${API_BASE}${path}`;
 
     const response = await apiFetch(url);
     const data = await response.json();
@@ -54,6 +58,38 @@
       throw new Error(data.error || 'Could not load price history.');
     }
     return data;
+  }
+
+  /**
+   * Build a watchlist-like entry from a search/browse product for chart fallbacks.
+   * @param {object} item - product from search results
+   * @param {object[]} [peerProducts] - matched Coles/Woolworths row peers
+   */
+  function buildProductChartFallbackEntry(item, peerProducts = []) {
+    const peers = Array.isArray(peerProducts) ? peerProducts.filter(Boolean) : [];
+    const colesProduct =
+      item.supermarket === 'Coles'
+        ? item
+        : peers.find((p) => p.supermarket === 'Coles') || null;
+    const woolProduct =
+      item.supermarket === 'Woolworths'
+        ? item
+        : peers.find((p) => p.supermarket === 'Woolworths') || null;
+
+    return {
+      id:
+        typeof getWatchlistProductId === 'function'
+          ? getWatchlistProductId(item)
+          : item.productId || item.name,
+      productId: item.productId || null,
+      barcode: item.barcode || null,
+      name: item.name,
+      supermarket: item.supermarket,
+      watchedAtPrice: item.price,
+      watchedAt: new Date().toISOString(),
+      lastColesPrice: colesProduct?.price ?? null,
+      lastWoolworthsPrice: woolProduct?.price ?? null,
+    };
   }
 
   /**
@@ -119,32 +155,42 @@
 
   /**
    * Destroy a chart instance and release the canvas (prevents mobile memory leaks).
-   * @param {string} watchId
+   * @param {string} chartId
    */
-  function destroyWatchlistChart(watchId) {
-    const existing = watchlistChartRegistry.get(watchId);
+  function destroyPriceChart(chartId) {
+    const existing = priceChartRegistry.get(chartId);
     if (existing) {
       existing.destroy();
-      watchlistChartRegistry.delete(watchId);
+      priceChartRegistry.delete(chartId);
     }
   }
 
-  /** Tear down every chart instance (e.g. before re-rendering the watchlist grid). */
+  /** @deprecated alias */
+  function destroyWatchlistChart(chartId) {
+    destroyPriceChart(chartId);
+  }
+
+  /** Tear down every chart instance (e.g. before re-rendering a grid). */
+  function destroyAllPriceCharts() {
+    priceChartRegistry.forEach((chart) => chart.destroy());
+    priceChartRegistry.clear();
+    openPriceChartId = null;
+  }
+
+  /** @deprecated alias */
   function destroyAllWatchlistCharts() {
-    watchlistChartRegistry.forEach((chart) => chart.destroy());
-    watchlistChartRegistry.clear();
-    openWatchlistChartId = null;
+    destroyAllPriceCharts();
   }
 
   /**
    * Draw dual-line chart from unified chartData [{ date, colesPrice, wooliesPrice }].
    */
-  function renderPriceChartFromChartData(canvas, chartData, watchId) {
+  function renderPriceChartFromChartData(canvas, chartData, chartId) {
     if (typeof Chart === 'undefined') {
       throw new Error('Chart.js is not loaded.');
     }
 
-    destroyWatchlistChart(watchId);
+    destroyPriceChart(chartId);
 
     const theme = getChartTheme();
     const labels = chartData.map((row) => row.date);
@@ -220,27 +266,27 @@
       },
     });
 
-    watchlistChartRegistry.set(watchId, chart);
+    priceChartRegistry.set(chartId, chart);
     return chart;
   }
 
   /**
-   * Draw or redraw the price history line chart on a watchlist card canvas.
+   * Draw or redraw the price history line chart on a card canvas.
    * @param {HTMLCanvasElement} canvas
    * @param {Array<{ supermarket: string, points: Array<{ date: string, price: number }> }>} series
-   * @param {string} watchId
+   * @param {string} chartId
    * @param {{ chartData?: Array<{ date: string, dateIso: string, colesPrice: number|null, wooliesPrice: number|null }> }} [options]
    */
-  function renderPriceChart(canvas, series, watchId, options = {}) {
+  function renderPriceChart(canvas, series, chartId, options = {}) {
     if (Array.isArray(options.chartData) && options.chartData.length) {
-      return renderPriceChartFromChartData(canvas, options.chartData, watchId);
+      return renderPriceChartFromChartData(canvas, options.chartData, chartId);
     }
 
     if (typeof Chart === 'undefined') {
       throw new Error('Chart.js is not loaded.');
     }
 
-    destroyWatchlistChart(watchId);
+    destroyPriceChart(chartId);
 
     const theme = getChartTheme();
     const labelsSet = new Set();
@@ -312,10 +358,25 @@
       },
     });
 
-    watchlistChartRegistry.set(watchId, chart);
+    priceChartRegistry.set(chartId, chart);
   }
 
-  // --- Accordion toggle ---
+  // --- Accordion toggle (shared by watchlist + product cards) ---
+
+  function getChartHostSelector(chartId) {
+    return `[data-chart-id="${escapeChartIdForSelector(chartId)}"]`;
+  }
+
+  function findChartHost(chartId) {
+    return document.querySelector(getChartHostSelector(chartId));
+  }
+
+  function getChartCanvas(card) {
+    return (
+      card.querySelector('.price-history-canvas') ||
+      card.querySelector('.watchlist-canvas')
+    );
+  }
 
   function setChartStatus(card, message, isError = false) {
     const status = card.querySelector('.price-chart-status');
@@ -325,100 +386,114 @@
     status.hidden = !message;
   }
 
-  function slideCloseChart(card, watchId) {
+  function slideCloseChart(card, chartId) {
     card.classList.remove('is-chart-open');
     card.querySelector('.watchlist-card-summary')?.setAttribute('aria-expanded', 'false');
+    card.querySelector('.price-history-toggle')?.setAttribute('aria-expanded', 'false');
     const container = card.querySelector('.price-chart-container');
     if (container) container.hidden = true;
-    destroyWatchlistChart(watchId);
-    if (openWatchlistChartId === watchId) openWatchlistChartId = null;
+    destroyPriceChart(chartId);
+    if (openPriceChartId === chartId) openPriceChartId = null;
   }
 
   /**
-   * Expand/collapse chart panel and load history when opening.
+   * Expand/collapse chart panel and lazy-load history when opening.
    * @param {HTMLElement} card
-   * @param {object} entry - watchlist localStorage entry
+   * @param {object} entry - watchlist entry or buildProductChartFallbackEntry()
    */
-  async function toggleWatchlistChart(card, entry) {
-    const watchId = entry.id;
+  async function togglePriceChart(card, entry) {
+    const chartId = entry.id;
     const container = card.querySelector('.price-chart-container');
-    const summary = card.querySelector('.watchlist-card-summary');
     if (!container) return;
 
     const isOpen = card.classList.contains('is-chart-open');
 
     if (isOpen) {
-      slideCloseChart(card, watchId);
+      slideCloseChart(card, chartId);
       return;
     }
 
-    // Close any other open chart first (keeps mobile layout tidy).
-    if (openWatchlistChartId && openWatchlistChartId !== watchId) {
-      const other = document.querySelector(
-        `.watchlist-card[data-watch-id="${escapeWatchIdForSelector(openWatchlistChartId)}"]`
-      );
-      if (other) slideCloseChart(other, openWatchlistChartId);
+    if (openPriceChartId && openPriceChartId !== chartId) {
+      const other = findChartHost(openPriceChartId);
+      if (other) slideCloseChart(other, openPriceChartId);
     }
 
     card.classList.add('is-chart-open');
-    summary?.setAttribute('aria-expanded', 'true');
+    card.querySelector('.watchlist-card-summary')?.setAttribute('aria-expanded', 'true');
+    card.querySelector('.price-history-toggle')?.setAttribute('aria-expanded', 'true');
     container.hidden = false;
-    openWatchlistChartId = watchId;
+    openPriceChartId = chartId;
 
-    const canvas = card.querySelector('.watchlist-canvas');
+    const canvas = getChartCanvas(card);
     if (!canvas) return;
 
     setChartStatus(card, 'Loading price history…');
 
     try {
-      const data = await fetchPriceHistory(watchId);
+      const data = await fetchPriceHistory({
+        watchId: chartId,
+        productId: entry.productId || null,
+        barcode: entry.barcode || null,
+      });
 
       if (Array.isArray(data.chartData) && data.chartData.length) {
         setChartStatus(
           card,
-          data.days ? `${data.days} day${data.days === 1 ? '' : 's'} tracked (up to ${data.maxDays || 100})` : ''
+          data.days
+            ? `${data.days} day${data.days === 1 ? '' : 's'} tracked (up to ${data.maxDays || 100})`
+            : ''
         );
-        renderPriceChart(canvas, data.series || [], watchId, { chartData: data.chartData });
+        renderPriceChart(canvas, data.series || [], chartId, { chartData: data.chartData });
         return;
       }
 
       const series = mergeHistoryWithFallback(data.series, entry);
 
       if (!series.length || !series.some((s) => s.points?.length)) {
-        setChartStatus(card, 'No price history yet. Refresh prices a few times to build a chart.');
-        destroyWatchlistChart(watchId);
+        setChartStatus(
+          card,
+          'No price history yet. Watch this product or refresh your watchlist to build a chart.'
+        );
+        destroyPriceChart(chartId);
         return;
       }
 
       setChartStatus(card, '');
-      renderPriceChart(canvas, series, watchId);
+      renderPriceChart(canvas, series, chartId);
     } catch (err) {
       const fallback = buildFallbackPriceSeries(entry);
       if (fallback.some((s) => s.points?.length)) {
-        setChartStatus(card, '');
-        renderPriceChart(canvas, fallback, watchId);
+        setChartStatus(card, 'Showing today\'s price — history builds over time.');
+        renderPriceChart(canvas, fallback, chartId);
       } else {
         setChartStatus(card, err.message || 'Could not load chart.', true);
-        destroyWatchlistChart(watchId);
+        destroyPriceChart(chartId);
       }
     }
+  }
+
+  /** @deprecated alias */
+  async function toggleWatchlistChart(card, entry) {
+    return togglePriceChart(card, entry);
   }
 
   /**
    * Bind accordion + remove button on a watchlist card (called from script.js after render).
    */
   function attachWatchlistCard(card, entry) {
+    card.dataset.chartId = entry.id;
+
     const summary = card.querySelector('.watchlist-card-summary');
     const removeBtn = card.querySelector('.watchlist-remove');
 
     if (summary) {
       summary.addEventListener('click', () => {
-        toggleWatchlistChart(card, entry);
+        togglePriceChart(card, entry);
       });
       summary.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          toggleWatchlistChart(card, entry);
+          togglePriceChart(card, entry);
         }
       });
     }
@@ -426,8 +501,8 @@
     if (removeBtn) {
       removeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        destroyWatchlistChart(entry.id);
-        if (openWatchlistChartId === entry.id) openWatchlistChartId = null;
+        destroyPriceChart(entry.id);
+        if (openPriceChartId === entry.id) openPriceChartId = null;
       });
     }
 
@@ -436,37 +511,73 @@
     });
   }
 
+  /**
+   * Bind price-history toggle on a global product card (search / browse / aligned matrix).
+   * @param {HTMLElement} card
+   * @param {object} item - product object from API
+   * @param {object[]} [peerProducts] - matched row peers for dual-store fallback
+   */
+  function attachProductCardChart(card, item, peerProducts = []) {
+    if (!card || !item) return;
+
+    const entry = buildProductChartFallbackEntry(item, peerProducts);
+    card.dataset.chartId = entry.id;
+
+    const toggle = card.querySelector('.price-history-toggle');
+    if (!toggle || toggle.dataset.chartBound === 'true') return;
+    toggle.dataset.chartBound = 'true';
+
+    toggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      togglePriceChart(card, entry);
+    });
+
+    card.querySelectorAll('a.product-link').forEach((link) => {
+      link.addEventListener('click', (e) => e.stopPropagation());
+    });
+  }
+
   /** Re-theme open charts after dark mode toggle. */
-  function refreshOpenWatchlistCharts() {
-    watchlistChartRegistry.forEach((chart, watchId) => {
-      const card = document.querySelector(
-        `.watchlist-card[data-watch-id="${escapeWatchIdForSelector(watchId)}"]`
-      );
+  function refreshOpenPriceCharts() {
+    priceChartRegistry.forEach((chart, chartId) => {
+      const card = findChartHost(chartId);
       if (!card || !card.classList.contains('is-chart-open')) {
-        destroyWatchlistChart(watchId);
+        destroyPriceChart(chartId);
         return;
       }
-      const canvas = card.querySelector('.watchlist-canvas');
-      const entry = typeof loadWatchlist === 'function'
-        ? loadWatchlist().find((w) => w.id === watchId)
-        : null;
+      const canvas = getChartCanvas(card);
+      const watchEntry =
+        typeof loadWatchlist === 'function'
+          ? loadWatchlist().find((w) => w.id === chartId)
+          : null;
+      const entry = watchEntry || { id: chartId };
       if (canvas && entry) {
-        fetchPriceHistory(watchId)
+        fetchPriceHistory({
+          watchId: chartId,
+          productId: entry.productId || null,
+          barcode: entry.barcode || null,
+        })
           .then((data) => {
             if (Array.isArray(data.chartData) && data.chartData.length) {
-              renderPriceChart(canvas, data.series || [], watchId, { chartData: data.chartData });
+              renderPriceChart(canvas, data.series || [], chartId, { chartData: data.chartData });
               return;
             }
             const series = mergeHistoryWithFallback(data.series, entry);
-            renderPriceChart(canvas, series, watchId);
+            renderPriceChart(canvas, series, chartId);
           })
           .catch(() => {});
       }
     });
   }
 
+  /** @deprecated alias */
+  function refreshOpenWatchlistCharts() {
+    refreshOpenPriceCharts();
+  }
+
   document.getElementById('theme-toggle')?.addEventListener('click', () => {
-    window.setTimeout(refreshOpenWatchlistCharts, 80);
+    window.setTimeout(refreshOpenPriceCharts, 80);
   });
 
   // --- PDF export (free Beta — client-side jsPDF) ---
@@ -665,9 +776,14 @@
 
   window.ShoppingSmartApp = {
     attachWatchlistCard,
+    attachProductCardChart,
+    buildProductChartFallbackEntry,
+    destroyPriceChart,
     destroyWatchlistChart,
+    destroyAllPriceCharts,
     destroyAllWatchlistCharts,
     renderPriceChart,
+    togglePriceChart,
     toggleWatchlistChart,
     exportShoppingListToPdf,
     exportCartToPdf,

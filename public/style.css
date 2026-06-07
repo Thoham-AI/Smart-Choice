@@ -1767,6 +1767,68 @@ button:hover {
     transform: translateY(-3px);
     box-shadow: var(--shadow-sm);
 }
+
+.product-card.is-chart-open {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-md);
+    transform: none;
+}
+
+.product-card.is-chart-open:hover {
+    transform: none;
+}
+
+.price-history-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 10px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.price-history-toggle:hover {
+    color: var(--accent-strong, var(--accent));
+}
+
+.price-history-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.price-history-toggle-icon {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+.product-card .price-chart-container {
+    display: none;
+    margin: 0 -2px 10px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--border-color);
+    animation: watchlist-chart-reveal 0.35s var(--ease-smooth);
+}
+
+.product-card.is-chart-open .price-chart-container {
+    display: block;
+}
+
+.aligned-cell-meta .price-history-toggle {
+    margin-top: 4px;
+    margin-bottom: 8px;
+}
+
+.aligned-cell-meta .price-chart-container {
+    margin-bottom: 8px;
+}
 .product-thumb {
     width: 80px;
     height: 80px;

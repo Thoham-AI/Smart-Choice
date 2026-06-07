@@ -598,18 +598,8 @@ async function recordPriceHistoryPoint(
   );
 }
 
-/** Load up to 100 days of Coles + Woolworths history; returns unified chartData for Chart.js. */
-async function getPriceHistoryForWatch(watchId) {
-  const collection = getPriceHistoryCollection();
-  if (!collection) {
-    return { series: [], chartData: [], days: 0, maxDays: PRICE_HISTORY_MAX_DAYS };
-  }
-
-  const docs = await collection
-    .find({ watchId: String(watchId) })
-    .sort({ bucketMonth: 1 })
-    .toArray();
-
+/** Merge Mongo price_history bucket docs into Coles/Woolworths series + chartData. */
+function buildPriceHistoryResultFromDocs(docs) {
   let colesPoints = [];
   let woolPoints = [];
 
@@ -641,6 +631,69 @@ async function getPriceHistoryForWatch(watchId) {
     days: chartData.length,
     maxDays: PRICE_HISTORY_MAX_DAYS,
   };
+}
+
+/** Load up to 100 days of Coles + Woolworths history; returns unified chartData for Chart.js. */
+async function getPriceHistoryForWatch(watchId) {
+  const collection = getPriceHistoryCollection();
+  if (!collection) {
+    return { series: [], chartData: [], days: 0, maxDays: PRICE_HISTORY_MAX_DAYS };
+  }
+
+  const docs = await collection
+    .find({ watchId: String(watchId) })
+    .sort({ bucketMonth: 1 })
+    .toArray();
+
+  return buildPriceHistoryResultFromDocs(docs);
+}
+
+/** Lookup history by indexed productId or barcode (any watchlist bucket that tracked this product). */
+async function getPriceHistoryByIndexedField(field, value) {
+  const collection = getPriceHistoryCollection();
+  if (!collection || !value) {
+    return { series: [], chartData: [], days: 0, maxDays: PRICE_HISTORY_MAX_DAYS };
+  }
+
+  const docs = await collection
+    .find({ [field]: String(value) })
+    .sort({ bucketMonth: 1 })
+    .toArray();
+
+  return buildPriceHistoryResultFromDocs(docs);
+}
+
+/** Resolve history from watchId, product id, or barcode (first match with data wins). */
+async function resolvePriceHistory({ watchId = '', productId = '', barcode = '' } = {}) {
+  const empty = { series: [], chartData: [], days: 0, maxDays: PRICE_HISTORY_MAX_DAYS };
+
+  if (watchId) {
+    const byWatch = await getPriceHistoryForWatch(watchId);
+    if (byWatch.chartData.length) return byWatch;
+  }
+
+  if (productId) {
+    const byProduct = await getPriceHistoryByIndexedField('productId', productId);
+    if (byProduct.chartData.length) return byProduct;
+    if (!watchId) {
+      const byProductAsWatch = await getPriceHistoryForWatch(productId);
+      if (byProductAsWatch.chartData.length) return byProductAsWatch;
+    }
+  }
+
+  if (barcode) {
+    const normalized = String(barcode).replace(/\D/g, '');
+    if (normalized.length >= 8) {
+      const byBarcode = await getPriceHistoryByIndexedField('barcode', normalized);
+      if (byBarcode.chartData.length) return byBarcode;
+    }
+  }
+
+  if (watchId) {
+    return getPriceHistoryForWatch(watchId);
+  }
+
+  return empty;
 }
 
 function roundGeoCoord(value) {
@@ -5224,6 +5277,40 @@ function extractColesStoreFromXml(xml) {
   return { storeId: storeNo, storeName };
 }
 
+/** Woolworths storelocator returns XML (not JSON) — parse first <storeDetail> block. */
+function extractWoolworthsStoreFromXml(xml) {
+  const text = String(xml || '');
+  const storeBlock =
+    text.match(/<storeDetail[^>]*>[\s\S]*?<\/storeDetail>/i)?.[0] || text;
+  const storeNo =
+    storeBlock.match(/<no[^>]*>(\d+)<\/no>/i)?.[1] ||
+    text.match(/<no[^>]*>(\d+)<\/no>/i)?.[1] ||
+    null;
+  const storeName =
+    storeBlock.match(/<name[^>]*>([^<]+)<\/name>/i)?.[1]?.trim() ||
+    text.match(/<name[^>]*>([^<]+)<\/name>/i)?.[1]?.trim() ||
+    null;
+  const suburb =
+    storeBlock.match(/<suburb[^>]*>([^<]+)<\/suburb>/i)?.[1]?.trim() ||
+    text.match(/<suburb[^>]*>([^<]+)<\/suburb>/i)?.[1]?.trim() ||
+    null;
+
+  const displayName =
+    storeName && suburb && !storeName.toLowerCase().includes(suburb.toLowerCase())
+      ? `${storeName} (${suburb})`
+      : storeName || suburb || null;
+
+  return { storeId: storeNo, storeName: displayName };
+}
+
+function extractWoolworthsStoreFromPayload(payload) {
+  const text = String(payload ?? '').trim();
+  if (text.startsWith('<?xml') || text.includes('<storeDetail')) {
+    return extractWoolworthsStoreFromXml(text);
+  }
+  return extractNearestStoreFromPayload(payload);
+}
+
 function buildNearestStoresPayload(entry = {}) {
   const colesName = entry.colesStoreName || null;
   const woolName = entry.woolworthsStoreName || null;
@@ -5313,9 +5400,13 @@ async function resolveWoolworthsStore(location) {
     return axios
       .get(url, {
         timeout: STORE_LOCATOR_REQUEST_TIMEOUT_MS,
-        headers: { Accept: 'application/json, text/plain, */*' },
+        headers: {
+          Accept: 'application/json, text/plain, application/xml, text/xml, */*',
+          'User-Agent': 'ShoppingSmart/1.0',
+        },
+        responseType: 'text',
       })
-      .then((response) => extractNearestStoreFromPayload(response.data));
+      .then((response) => extractWoolworthsStoreFromPayload(response.data));
   });
 
   const results = await Promise.allSettled(attempts);
@@ -6207,14 +6298,24 @@ app.get('/api/watchlist/price-history', handlePriceHistoryRequest);
 app.get('/api/price-history', handlePriceHistoryRequest);
 
 async function handlePriceHistoryRequest(req, res) {
-  const watchId = String(req.query.watchId || '').trim();
-  if (!watchId) {
-    return res.status(400).json({ error: 'Missing watchId query parameter.' });
+  const watchId = String(req.query.watchId || req.query.id || '').trim();
+  const productId = String(req.query.productId || '').trim();
+  const barcode = String(req.query.barcode || '').trim();
+
+  if (!watchId && !productId && !barcode) {
+    return res.status(400).json({
+      error: 'Missing query parameter: provide watchId, id, productId, or barcode.',
+    });
   }
 
   try {
-    const history = await getPriceHistoryForWatch(watchId);
-    return res.json({ watchId, ...history });
+    const history = await resolvePriceHistory({ watchId, productId, barcode });
+    return res.json({
+      watchId: watchId || null,
+      productId: productId || null,
+      barcode: barcode || null,
+      ...history,
+    });
   } catch (error) {
     console.error('  ❌ Price history error:', error.message);
     return res.status(500).json({

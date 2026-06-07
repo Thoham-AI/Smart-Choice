@@ -985,6 +985,47 @@ function buildProductTitleRow(item) {
   `;
 }
 
+/** Collapsible price-history panel markup (lazy-loaded on expand). */
+function buildProductCardChartSection() {
+  return `
+    <button
+      type="button"
+      class="price-history-toggle"
+      aria-expanded="false"
+      aria-label="View price history"
+    >
+      <span class="price-history-toggle-icon" aria-hidden="true">📈</span>
+      View price history
+    </button>
+    <div class="price-chart-container" hidden>
+      <p class="price-chart-status" hidden></p>
+      <div class="price-chart-canvas-wrap">
+        <canvas class="price-history-canvas" aria-label="Price history chart"></canvas>
+      </div>
+    </div>
+  `;
+}
+
+/** Products in the same aligned compare row (for dual-store chart fallback). */
+function getMatrixRowPeerProducts(matrixRow) {
+  if (!matrixRow) return [];
+  return ALIGNED_STORE_META.map(({ key }) => matrixRow[key]).filter(Boolean);
+}
+
+/** Peer products from similar-pair cache (browse grid fallback). */
+function getBrowsePeerProducts(item) {
+  const pair = findPairForItem(item);
+  if (!pair) return [item];
+  const peers = [pair.coles, pair.woolworths, item].filter(Boolean);
+  return [...new Map(peers.map((p) => [getWatchlistProductId(p), p])).values()];
+}
+
+/** Wire lazy price-history chart onto a rendered product card. */
+function initProductCardChart(card, item, peerProducts = []) {
+  if (!card || !item) return;
+  window.ShoppingSmartApp?.attachProductCardChart?.(card, item, peerProducts);
+}
+
 /** Attach click handlers to bell buttons in a DOM subtree */
 function bindWatchlistButtons(root, itemResolver) {
   if (!root) return;
@@ -1249,6 +1290,7 @@ function resetCompareView() {
   compareStoreVisibility.woolworths = true;
   compareStoreVisibility.coles = true;
   lastSimilarPairs = [];
+  window.ShoppingSmartApp?.destroyAllPriceCharts?.();
 }
 
 function handleBrandHomeClick(event) {
@@ -1375,6 +1417,8 @@ async function runCompareSearch({ keyword, barcode }) {
 
 /** Render comparison results on screen */
 function displayCompareResults(data, options = {}) {
+  window.ShoppingSmartApp?.destroyAllPriceCharts?.();
+
   const alignedSection = document.getElementById('aligned-compare-section');
   const alignedRowsEl = document.getElementById('aligned-compare-rows');
   const summarySection = document.getElementById('summary-section');
@@ -1766,6 +1810,13 @@ function renderAlignedCompareRows(container, section, keywordBlocks, data = {}) 
         }
         return null;
       });
+
+      const rowPeers = getMatrixRowPeerProducts(matrixRow);
+      rowEl.querySelectorAll('.aligned-store-cell.product-card').forEach((cell) => {
+        const storeKey = cell.dataset.store;
+        const product = matrixRow[storeKey];
+        if (product) initProductCardChart(cell, product, rowPeers);
+      });
     });
 
     container.appendChild(group);
@@ -1869,7 +1920,7 @@ function buildAlignedMatrixCellHtml(
   const savingHtml = buildRowMultiStoreSavingBadge(rowPeers, product.supermarket);
 
   return `
-    <div class="aligned-store-cell product-card${isCheapest ? ' cheapest' : ''}" data-store="${escapeHtml(storeKey)}">
+    <div class="aligned-store-cell product-card${isCheapest ? ' cheapest' : ''}" data-store="${escapeHtml(storeKey)}" data-product-id="${escapeHtml(getWatchlistProductId(product))}">
       <p class="store-label ${labelClass}">${escapeHtml(storeName)}</p>
       <div class="aligned-cell-body">
         ${buildLinkedImage(product, 'product-thumb', keyword)}
@@ -1881,6 +1932,7 @@ function buildAlignedMatrixCellHtml(
       </div>
       <div class="aligned-cell-meta">
         ${isCheapest && rowPeers.length >= 2 ? '<p class="cheapest-label">Lowest price</p>' : ''}
+        ${buildProductCardChartSection()}
         <button type="button" class="select-btn aligned-add-btn" data-store="${escapeHtml(storeKey)}">Add to list</button>
       </div>
     </div>`;
@@ -1971,12 +2023,15 @@ function renderStoreResults(container, products, storeName, storeError = '') {
       ${buildProductTitleRow(item)}
       ${priceBlock}
       ${isCheapest ? '<p class="cheapest-label">Lowest price</p>' : ''}
+      ${buildProductCardChartSection()}
       <button class="select-btn" type="button">Add to list</button>
     `;
 
     bindWatchlistButtons(card, (watchId) =>
       getWatchlistProductId(item) === watchId ? item : null
     );
+
+    initProductCardChart(card, item, getBrowsePeerProducts(item));
 
     card.querySelector('.select-btn').addEventListener('click', () => {
       addToCart(item);
