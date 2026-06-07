@@ -56,7 +56,7 @@ const MEMORY_CACHE_TTL_MS = 30 * 60 * 1000;
 const MEMORY_CACHE_MAX_ENTRIES = 300;
 /** Tra cứu store ID tối đa — sau đó search chỉ dùng lat/lng. */
 const STORE_LOOKUP_MAX_MS = 6000;
-const COMPARE_STORE_LOOKUP_MS = 2500;
+const COMPARE_STORE_LOOKUP_MS = 5000;
 const STORE_LOCATOR_REQUEST_TIMEOUT_MS = 5000;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
@@ -67,7 +67,40 @@ const SYDNEY_DEFAULT_LOCATION = {
   source: 'default',
 };
 
-/** Per-request user coordinates (set by middleware from headers / query / body). */
+/** State capitals — fallback when only state or postcode prefix is known. */
+const AU_STATE_CENTROIDS = {
+  NSW: { latitude: -33.8688, longitude: 151.2093 },
+  ACT: { latitude: -35.2809, longitude: 149.13 },
+  VIC: { latitude: -37.8136, longitude: 144.9631 },
+  QLD: { latitude: -27.4698, longitude: 153.0251 },
+  SA: { latitude: -34.9285, longitude: 138.6007 },
+  WA: { latitude: -31.9505, longitude: 115.8605 },
+  TAS: { latitude: -42.8821, longitude: 147.3272 },
+  NT: { latitude: -12.4634, longitude: 130.8456 },
+};
+
+const AU_STATE_ALIASES = {
+  nsw: 'NSW',
+  'new south wales': 'NSW',
+  act: 'ACT',
+  vic: 'VIC',
+  victoria: 'VIC',
+  qld: 'QLD',
+  queensland: 'QLD',
+  sa: 'SA',
+  'south australia': 'SA',
+  wa: 'WA',
+  'western australia': 'WA',
+  tas: 'TAS',
+  tasmania: 'TAS',
+  nt: 'NT',
+  'northern territory': 'NT',
+};
+
+/** In-memory postcode → lat/lng (avoid repeat Nominatim calls). */
+const postcodeGeocodeCache = new Map();
+
+/** Per-request user coordinates + optional store overrides (AsyncLocalStorage). */
 const requestLocationContext = new AsyncLocalStorage();
 
 /** In-memory cache for nearest store IDs resolved from lat/lng (1 hour TTL). */
@@ -92,8 +125,24 @@ const API_CACHE_COLLECTION = 'api_cache';
  * - Fields: supermarket, keyword, payload[], updatedAt, expiresAt
  * - Production: KHÔNG xóa hàng loạt — chỉ deleteOne từng _id khi quá chu kỳ Thứ Tư (Sydney)
  */
+/**
+ * Price history — MongoDB Bucket Pattern (one document per watchId per calendar month).
+ *
+ * Collection: price_history
+ * _id: "{watchId}::{YYYY-MM}"  e.g. "coles-milk-2L::2026-06"
+ *
+ * {
+ *   watchId, productId, barcode, productName, bucketMonth: "2026-06",
+ *   coles_history:    [{ date: "2026-06-07", price: 4.50 }, ...],
+ *   woolies_history:  [{ date: "2026-06-07", price: 5.00 }, ...],
+ *   createdAt, updatedAt
+ * }
+ *
+ * Daily scraper upserts today's price into the month bucket (no new doc per day).
+ * Chart API merges buckets and returns last 100 days as unified chartData[].
+ */
 const PRICE_HISTORY_COLLECTION = 'price_history';
-const PRICE_HISTORY_MAX_POINTS = 90;
+const PRICE_HISTORY_MAX_DAYS = 100;
 const SITE_STATS_COLLECTION = 'site_stats';
 /** Single document id for global page view counter. */
 const SITE_STATS_PAGE_VIEWS_ID = 'page_views';
@@ -448,14 +497,72 @@ async function incrementPageViews() {
   return Number.isFinite(views) && views >= 0 ? views : null;
 }
 
-function buildPriceHistoryId(watchId, supermarket) {
-  return `${String(watchId)}::${supermarket}`;
+function buildPriceHistoryBucketId(watchId, yearMonth) {
+  return `${String(watchId)}::${yearMonth}`;
+}
+
+function getYearMonthFromIsoDate(isoDate) {
+  return String(isoDate || '').slice(0, 7);
+}
+
+function upsertDailyPriceInArray(arr, date, price) {
+  const list = Array.isArray(arr) ? [...arr] : [];
+  const point = { date, price: Number(Number(price).toFixed(2)) };
+  const idx = list.findIndex((entry) => entry.date === date);
+  if (idx >= 0) list[idx] = point;
+  else list.push(point);
+  return list.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+function dedupeAndSortPricePoints(points) {
+  const byDate = new Map();
+  for (const point of points || []) {
+    if (!point?.date || point.price == null) continue;
+    byDate.set(String(point.date), {
+      date: String(point.date),
+      price: Number(Number(point.price).toFixed(2)),
+    });
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function formatChartDateLabel(isoDate) {
+  const parts = String(isoDate).split('-').map(Number);
+  if (parts.length < 3 || parts.some((n) => !Number.isFinite(n))) return isoDate;
+  const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  return dt.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+}
+
+function getPriceHistoryCutoffIso() {
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - (PRICE_HISTORY_MAX_DAYS - 1));
+  return cutoff.toISOString().slice(0, 10);
+}
+
+function buildUnifiedChartData(colesPoints, woolPoints) {
+  const colesMap = new Map(colesPoints.map((p) => [p.date, p.price]));
+  const woolMap = new Map(woolPoints.map((p) => [p.date, p.price]));
+  const dates = new Set([...colesMap.keys(), ...woolMap.keys()]);
+
+  return [...dates].sort().map((dateIso) => ({
+    date: formatChartDateLabel(dateIso),
+    dateIso,
+    colesPrice: colesMap.has(dateIso) ? colesMap.get(dateIso) : null,
+    wooliesPrice: woolMap.has(dateIso) ? woolMap.get(dateIso) : null,
+  }));
 }
 
 /**
- * Append or update today's price point for a watchlist product (one point per calendar day).
+ * Append or update today's price in the month bucket (Bucket Pattern upsert).
+ * One document per watchId per YYYY-MM — both chains live in the same bucket.
  */
-async function recordPriceHistoryPoint(watchId, supermarket, price, productName = '') {
+async function recordPriceHistoryPoint(
+  watchId,
+  supermarket,
+  price,
+  productName = '',
+  meta = {}
+) {
   const collection = getPriceHistoryCollection();
   if (!collection) return;
 
@@ -464,47 +571,76 @@ async function recordPriceHistoryPoint(watchId, supermarket, price, productName 
     return;
   }
 
-  const _id = buildPriceHistoryId(watchId, supermarket);
   const today = new Date().toISOString().slice(0, 10);
+  const bucketMonth = getYearMonthFromIsoDate(today);
+  const _id = buildPriceHistoryBucketId(watchId, bucketMonth);
+  const historyField = supermarket === 'Coles' ? 'coles_history' : 'woolies_history';
+
   const existing = await collection.findOne({ _id });
-  const points = Array.isArray(existing?.points) ? [...existing.points] : [];
-  const last = points[points.length - 1];
+  const currentArr = Array.isArray(existing?.[historyField]) ? existing[historyField] : [];
+  const updatedArr = upsertDailyPriceInArray(currentArr, today, numericPrice);
 
-  if (last && last.date === today) {
-    last.price = Number(numericPrice.toFixed(2));
-  } else {
-    points.push({ date: today, price: Number(numericPrice.toFixed(2)) });
-  }
-
-  const trimmed = points.slice(-PRICE_HISTORY_MAX_POINTS);
   await collection.updateOne(
     { _id },
     {
       $set: {
         watchId: String(watchId),
-        supermarket,
+        productId: meta.productId || existing?.productId || null,
+        barcode: meta.barcode || existing?.barcode || null,
         productName: String(productName || existing?.productName || '').trim(),
-        points: trimmed,
+        bucketMonth,
+        [historyField]: updatedArr,
         updatedAt: new Date(),
       },
+      $setOnInsert: { createdAt: new Date() },
     },
     { upsert: true }
   );
 }
 
-/** Load Coles + Woolworths price series for a watchlist entry. */
+/** Load up to 100 days of Coles + Woolworths history; returns unified chartData for Chart.js. */
 async function getPriceHistoryForWatch(watchId) {
   const collection = getPriceHistoryCollection();
-  if (!collection) return [];
+  if (!collection) {
+    return { series: [], chartData: [], days: 0, maxDays: PRICE_HISTORY_MAX_DAYS };
+  }
 
   const docs = await collection
     .find({ watchId: String(watchId) })
+    .sort({ bucketMonth: 1 })
     .toArray();
 
-  return docs.map((doc) => ({
-    supermarket: doc.supermarket,
-    points: Array.isArray(doc.points) ? doc.points : [],
-  }));
+  let colesPoints = [];
+  let woolPoints = [];
+
+  for (const doc of docs) {
+    if (Array.isArray(doc.coles_history)) colesPoints.push(...doc.coles_history);
+    if (Array.isArray(doc.woolies_history)) woolPoints.push(...doc.woolies_history);
+    // Legacy: one doc per supermarket with `points[]`
+    if (Array.isArray(doc.points)) {
+      if (doc.supermarket === 'Coles') colesPoints.push(...doc.points);
+      if (doc.supermarket === 'Woolworths') woolPoints.push(...doc.points);
+    }
+  }
+
+  colesPoints = dedupeAndSortPricePoints(colesPoints);
+  woolPoints = dedupeAndSortPricePoints(woolPoints);
+
+  const cutoffIso = getPriceHistoryCutoffIso();
+  colesPoints = colesPoints.filter((p) => p.date >= cutoffIso).slice(-PRICE_HISTORY_MAX_DAYS);
+  woolPoints = woolPoints.filter((p) => p.date >= cutoffIso).slice(-PRICE_HISTORY_MAX_DAYS);
+
+  const chartData = buildUnifiedChartData(colesPoints, woolPoints);
+
+  return {
+    series: [
+      { supermarket: 'Coles', points: colesPoints },
+      { supermarket: 'Woolworths', points: woolPoints },
+    ],
+    chartData,
+    days: chartData.length,
+    maxDays: PRICE_HISTORY_MAX_DAYS,
+  };
 }
 
 function roundGeoCoord(value) {
@@ -515,7 +651,7 @@ function roundGeoCoord(value) {
 
 /**
  * Read latitude/longitude from the incoming request (headers preferred, then query, then JSON body).
- * Falls back to Sydney CBD when coordinates are missing or invalid.
+ * Returns null coordinates when only postcode/state is supplied — use resolveRequestLocation().
  */
 function parseUserLocationFromRequest(req) {
   const readNumber = (...candidates) => {
@@ -523,6 +659,15 @@ function parseUserLocationFromRequest(req) {
       if (raw == null || raw === '') continue;
       const n = Number(raw);
       if (Number.isFinite(n) && Math.abs(n) <= 180) return n;
+    }
+    return null;
+  };
+
+  const readString = (...candidates) => {
+    for (const raw of candidates) {
+      if (raw == null || raw === '') continue;
+      const text = String(raw).trim();
+      if (text) return text;
     }
     return null;
   };
@@ -547,23 +692,189 @@ function parseUserLocationFromRequest(req) {
     req.body?.lon
   );
 
+  const postcode = readString(
+    req.headers['x-postcode'],
+    req.query?.postcode,
+    req.body?.postcode
+  );
+  const state = normalizeAustralianState(
+    readString(req.headers['x-state'], req.query?.state, req.body?.state)
+  );
+
   if (latitude != null && longitude != null) {
     const sourceHeader = String(req.headers['x-location-source'] || '').trim().toLowerCase();
     const source =
-      sourceHeader === 'gps' || sourceHeader === 'default' ? sourceHeader : 'client';
+      sourceHeader === 'gps' ||
+      sourceHeader === 'default' ||
+      sourceHeader === 'postcode' ||
+      sourceHeader === 'state' ||
+      sourceHeader === 'client'
+        ? sourceHeader
+        : 'client';
     return {
       latitude: roundGeoCoord(latitude),
       longitude: roundGeoCoord(longitude),
       source,
+      postcode: postcode || null,
+      state: state || null,
     };
   }
 
-  return { ...SYDNEY_DEFAULT_LOCATION };
+  return {
+    latitude: null,
+    longitude: null,
+    source: 'pending',
+    postcode,
+    state,
+  };
+}
+
+function normalizeAustralianState(value) {
+  const key = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!key) return null;
+  if (AU_STATE_CENTROIDS[key.toUpperCase()]) return key.toUpperCase();
+  return AU_STATE_ALIASES[key] || null;
+}
+
+function normalizeAustralianPostcode(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length < 4) return null;
+  return digits.slice(0, 4);
+}
+
+function inferLocationFromPostcodePrefix(postcode) {
+  const prefix = postcode.charAt(0);
+  const stateByPrefix = {
+    '0': 'NT',
+    '2': 'NSW',
+    '3': 'VIC',
+    '4': 'QLD',
+    '5': 'SA',
+    '6': 'WA',
+    '7': 'TAS',
+  };
+  const state = stateByPrefix[prefix] || 'NSW';
+  const centroid = AU_STATE_CENTROIDS[state];
+  return {
+    latitude: centroid.latitude,
+    longitude: centroid.longitude,
+    source: 'postcode_fallback',
+    postcode,
+    state,
+  };
+}
+
+/** Geocode AU postcode → lat/lng (Nominatim with state-prefix fallback). */
+async function geocodeAustralianPostcode(postcode) {
+  const normalized = normalizeAustralianPostcode(postcode);
+  if (!normalized) return null;
+
+  if (postcodeGeocodeCache.has(normalized)) {
+    return postcodeGeocodeCache.get(normalized);
+  }
+
+  try {
+    const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+      params: {
+        postalcode: normalized,
+        country: 'Australia',
+        format: 'json',
+        limit: 1,
+      },
+      headers: {
+        'User-Agent': 'ShoppingSmart/1.0 (grocery price comparison)',
+      },
+      timeout: 4500,
+    });
+    const hit = Array.isArray(response.data) ? response.data[0] : null;
+    if (hit?.lat != null && hit?.lon != null) {
+      const resolved = {
+        latitude: roundGeoCoord(hit.lat),
+        longitude: roundGeoCoord(hit.lon),
+        source: 'postcode',
+        postcode: normalized,
+        state: null,
+      };
+      postcodeGeocodeCache.set(normalized, resolved);
+      console.log(`  📍 Postcode ${normalized} → ${resolved.latitude}, ${resolved.longitude}`);
+      return resolved;
+    }
+  } catch (err) {
+    console.warn(`  ⚠ Postcode geocode failed (${normalized}):`, err.message);
+  }
+
+  const fallback = inferLocationFromPostcodePrefix(normalized);
+  postcodeGeocodeCache.set(normalized, fallback);
+  console.log(
+    `  📍 Postcode ${normalized} → state fallback ${fallback.state} (${fallback.latitude}, ${fallback.longitude})`
+  );
+  return fallback;
+}
+
+function parseStoreOverridesFromRequest(req) {
+  const readId = (...candidates) => {
+    for (const raw of candidates) {
+      if (raw == null || raw === '') continue;
+      const text = String(raw).trim();
+      if (text) return text;
+    }
+    return null;
+  };
+  return {
+    colesStoreId: readId(
+      req.headers['x-coles-store-id'],
+      req.query?.colesStoreId,
+      req.body?.colesStoreId
+    ),
+    woolworthsStoreId: readId(
+      req.headers['x-woolworths-store-id'],
+      req.query?.woolworthsStoreId,
+      req.body?.woolworthsStoreId
+    ),
+  };
+}
+
+/** Resolve coordinates: GPS/client → postcode → state → Sydney default. */
+async function resolveRequestLocation(req) {
+  const parsed = parseUserLocationFromRequest(req);
+
+  if (parsed.latitude != null && parsed.longitude != null) {
+    return parsed;
+  }
+
+  if (parsed.postcode) {
+    const geo = await geocodeAustralianPostcode(parsed.postcode);
+    if (geo) return geo;
+  }
+
+  if (parsed.state && AU_STATE_CENTROIDS[parsed.state]) {
+    const centroid = AU_STATE_CENTROIDS[parsed.state];
+    return {
+      latitude: centroid.latitude,
+      longitude: centroid.longitude,
+      source: 'state',
+      postcode: parsed.postcode || null,
+      state: parsed.state,
+    };
+  }
+
+  return { ...SYDNEY_DEFAULT_LOCATION, postcode: null, state: 'NSW' };
+}
+
+function getRequestStoreOverrides() {
+  return (
+    requestLocationContext.getStore()?.storeOverrides || {
+      colesStoreId: null,
+      woolworthsStoreId: null,
+    }
+  );
 }
 
 /** Active coordinates for the current HTTP request (AsyncLocalStorage). */
 function getRequestLocation() {
-  return requestLocationContext.getStore()?.location || { ...SYDNEY_DEFAULT_LOCATION };
+  return requestLocationContext.getStore()?.location || { ...SYDNEY_DEFAULT_LOCATION, state: 'NSW' };
 }
 
 function buildLocationSegment(location) {
@@ -689,6 +1000,9 @@ async function writeApiCache(supermarket, keyword, payload, location) {
     },
     { upsert: true }
   );
+  console.log(
+    `  💾 ${supermarket} cache saved: "${keyword}" @ ${buildLocationSegment(location)} (${payload.length} items)`
+  );
 }
 
 /** Connect on local startup and print database name for easy verification. */
@@ -708,9 +1022,18 @@ const app = express();
 app.use(cors());                       // Cho phép front-end trên origin khác gọi vào
 app.use(express.json({ limit: '32kb' }));
 // Attach parsed user coordinates to the async context for downstream RapidAPI calls.
-app.use((req, _res, next) => {
-  const location = parseUserLocationFromRequest(req);
-  requestLocationContext.run({ location }, () => next());
+app.use(async (req, res, next) => {
+  try {
+    const location = await resolveRequestLocation(req);
+    const storeOverrides = parseStoreOverridesFromRequest(req);
+    requestLocationContext.run({ location, storeOverrides }, () => next());
+  } catch (err) {
+    console.warn('  ⚠ Location resolution failed:', err.message);
+    requestLocationContext.run(
+      { location: { ...SYDNEY_DEFAULT_LOCATION, state: 'NSW' }, storeOverrides: {} },
+      () => next()
+    );
+  }
 });
 // Tắt cache để tránh trình duyệt dùng JS/API cũ gây hiển thị dữ liệu "fake"
 app.use((_req, res, next) => {
@@ -1285,9 +1608,13 @@ function collectBarcodesFromRaw(raw, found = new Set()) {
     'ean',
     'ean13',
     'gtin',
+    'gtin13',
+    'gtin14',
     'upc',
+    'apn',
     'product_barcode',
     'productBarcode',
+    'sku',
   ];
 
   for (const key of fields) {
@@ -1337,6 +1664,106 @@ function findProductByBarcodeInRawList(rawList, barcode, supermarket) {
   }
 
   return null;
+}
+
+function barcodeSearchVariants(barcode) {
+  const target = normalizeBarcode(barcode);
+  const variants = new Set([target]);
+  if (target.length === 12) variants.add(`0${target}`);
+  if (target.length === 13 && target.startsWith('0')) variants.add(target.slice(1));
+  return [...variants];
+}
+
+/** Walk nested API payload for digit strings that look like barcodes. */
+function deepScanBarcodeDigits(value, found = new Set(), depth = 0) {
+  if (depth > 6 || value == null) return found;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const digits = normalizeBarcode(value);
+    if (digits.length >= 8 && digits.length <= 14) found.add(digits);
+    return found;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => deepScanBarcodeDigits(entry, found, depth + 1));
+    return found;
+  }
+  if (typeof value === 'object') {
+    Object.values(value).forEach((entry) => deepScanBarcodeDigits(entry, found, depth + 1));
+  }
+  return found;
+}
+
+function logBarcodeRawSample(supermarket, rawList, limit = 3) {
+  const sample = rawList.slice(0, limit).map((raw, idx) => {
+    const name =
+      raw?.name ||
+      raw?.productName ||
+      raw?.title ||
+      raw?.product?.name ||
+      '(no name)';
+    const codes = [...collectBarcodesFromRaw(raw), ...deepScanBarcodeDigits(raw)];
+    return `#${idx + 1} "${String(name).slice(0, 60)}" codes=[${[...new Set(codes)].slice(0, 4).join(', ')}]`;
+  });
+  console.log(`  📷 ${supermarket} raw sample:\n    ${sample.join('\n    ')}`);
+}
+
+/**
+ * Match barcode in search results — exact field match, deep scan, then single-result fallback.
+ */
+function findProductByBarcodeWithFallback(rawList, barcode, supermarket) {
+  const exact = findProductByBarcodeInRawList(rawList, barcode, supermarket);
+  if (exact) return { product: exact, matchKind: 'barcode_field' };
+
+  for (const raw of rawList) {
+    const codes = deepScanBarcodeDigits(raw);
+    for (const code of codes) {
+      if (barcodesMatch(code, barcode)) {
+        const product = normalizeItem(raw, supermarket, { scannedBarcode: barcode });
+        if (product) return { product, matchKind: 'deep_scan' };
+      }
+    }
+  }
+
+  if (rawList.length === 1) {
+    const product = normalizeItem(rawList[0], supermarket, { scannedBarcode: barcode });
+    if (product) return { product, matchKind: 'single_search_result' };
+  }
+
+  const target = normalizeBarcode(barcode);
+  for (const raw of rawList.slice(0, 8)) {
+    if (JSON.stringify(raw).includes(target)) {
+      const product = normalizeItem(raw, supermarket, { scannedBarcode: barcode });
+      if (product) return { product, matchKind: 'barcode_in_payload' };
+    }
+  }
+
+  return { product: null, matchKind: null };
+}
+
+async function fetchBarcodeProductForStore(supermarket, barcode, storeIds) {
+  const variants = barcodeSearchVariants(barcode);
+  let lastRawList = [];
+
+  for (const variant of variants) {
+    const rawList = await fetchStoreRawList(supermarket, variant, { storeIds });
+    lastRawList = rawList;
+    console.log(
+      `  📷 ${supermarket} barcode API search term="${variant}" → ${rawList.length} result(s)`
+    );
+    if (rawList.length) logBarcodeRawSample(supermarket, rawList);
+
+    const { product, matchKind } = findProductByBarcodeWithFallback(rawList, barcode, supermarket);
+    if (product) {
+      console.log(
+        `  📷 ${supermarket} barcode HIT (${matchKind}): "${product.name}" @ $${product.price ?? 'n/a'}`
+      );
+      return { product, rawList, matchKind, error: null };
+    }
+  }
+
+  console.log(
+    `  📷 ${supermarket} barcode MISS for ${barcode} (tried ${variants.join(', ')}; last batch ${lastRawList.length} items)`
+  );
+  return { product: null, rawList: lastRawList, matchKind: null, error: null };
 }
 
 /**
@@ -4733,21 +5160,17 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
 // ============================================================
 
 function extractStoreIdFromPayload(payload) {
-  if (payload == null) return null;
+  return extractNearestStoreFromPayload(payload).storeId;
+}
+
+/** Extract nearest store id + display name from locator JSON/XML-derived objects. */
+function extractNearestStoreFromPayload(payload) {
+  if (payload == null) return { storeId: null, storeName: null };
 
   if (typeof payload === 'string' || typeof payload === 'number') {
     const digits = String(payload).replace(/\D/g, '');
-    return digits.length >= 3 ? digits : null;
+    return { storeId: digits.length >= 3 ? digits : null, storeName: null };
   }
-
-  const direct =
-    payload.storeId ??
-    payload.store_id ??
-    payload.storeNo ??
-    payload.storeNumber ??
-    payload.StoreNumber ??
-    payload.id;
-  if (direct != null && String(direct).trim()) return String(direct).trim();
 
   const list =
     payload.stores ??
@@ -4757,15 +5180,69 @@ function extractStoreIdFromPayload(payload) {
     payload.results ??
     payload.data;
   if (Array.isArray(list) && list.length) {
-    return extractStoreIdFromPayload(list[0]);
+    return extractNearestStoreFromPayload(list[0]);
   }
 
-  return null;
+  const storeId =
+    payload.storeId ??
+    payload.store_id ??
+    payload.storeNo ??
+    payload.storeNumber ??
+    payload.StoreNumber ??
+    payload.no ??
+    payload.id;
+  const storeName =
+    payload.name ??
+    payload.Name ??
+    payload.storeName ??
+    payload.StoreName ??
+    payload.description ??
+    payload.suburb ??
+    payload.Suburb ??
+    payload.addressLine1 ??
+    null;
+
+  return {
+    storeId: storeId != null && String(storeId).trim() ? String(storeId).trim() : null,
+    storeName: storeName != null ? String(storeName).trim() : null,
+  };
+}
+
+function extractColesStoreFromXml(xml) {
+  const text = String(xml || '');
+  const locationBlock =
+    text.match(/<Location[^>]*>[\s\S]*?<\/Location>/i)?.[0] || text;
+  const storeNo =
+    locationBlock.match(/<StoreNo[^>]*>(\d+)<\/StoreNo>/i)?.[1] ||
+    text.match(/<StoreNo[^>]*>(\d+)<\/StoreNo>/i)?.[1] ||
+    null;
+  const storeName =
+    locationBlock.match(/<Name[^>]*>([^<]+)<\/Name>/i)?.[1]?.trim() ||
+    locationBlock.match(/<StoreName[^>]*>([^<]+)<\/StoreName>/i)?.[1]?.trim() ||
+    text.match(/<Name[^>]*>([^<]+)<\/Name>/i)?.[1]?.trim() ||
+    null;
+  return { storeId: storeNo, storeName };
+}
+
+function buildNearestStoresPayload(entry = {}) {
+  const colesName = entry.colesStoreName || null;
+  const woolName = entry.woolworthsStoreName || null;
+  const colesId = entry.colesStoreId || null;
+  const woolId = entry.woolworthsStoreId || null;
+
+  const colesLabel = colesName || (colesId ? `Store #${colesId}` : null);
+  const woolLabel = woolName || (woolId ? `Store #${woolId}` : null);
+
+  return {
+    coles: colesId || colesLabel ? { id: colesId, name: colesName, label: colesLabel } : null,
+    woolworths:
+      woolId || woolLabel ? { id: woolId, name: woolName, label: woolLabel } : null,
+  };
 }
 
 /** RapidAPI store locator (một endpoint, timeout ngắn — fallback sau locator công khai). */
-async function tryRapidApiNearestStoreId(supermarket, location) {
-  if (!RAPIDAPI_KEY) return null;
+async function tryRapidApiNearestStore(supermarket, location) {
+  if (!RAPIDAPI_KEY) return { storeId: null, storeName: null };
 
   const isColes = supermarket === 'Coles';
   const host = isColes ? COLES_HOST : WOOLWORTHS_HOST;
@@ -4787,14 +5264,19 @@ async function tryRapidApiNearestStoreId(supermarket, location) {
       },
       timeout: STORE_LOCATOR_REQUEST_TIMEOUT_MS,
     });
-    return extractStoreIdFromPayload(response.data);
+    return extractNearestStoreFromPayload(response.data);
   } catch {
-    return null;
+    return { storeId: null, storeName: null };
   }
 }
 
-/** Resolve the nearest Coles store number via the public store-locator service. */
-async function resolveColesStoreId(location) {
+async function tryRapidApiNearestStoreId(supermarket, location) {
+  const store = await tryRapidApiNearestStore(supermarket, location);
+  return store.storeId;
+}
+
+/** Resolve the nearest Coles store via the public store-locator service. */
+async function resolveColesStore(location) {
   try {
     const response = await axios.get(
       'http://locator.coles.com.au/services/storelocator.asmx/GetLocationsNearGeoPoint',
@@ -4807,20 +5289,22 @@ async function resolveColesStoreId(location) {
         responseType: 'text',
       }
     );
-    const xml = String(response.data || '');
-    const match =
-      xml.match(/<StoreNo[^>]*>(\d+)<\/StoreNo>/i) ||
-      xml.match(/<storeno[^>]*>(\d+)<\/storeno>/i);
-    if (match) return match[1];
+    const store = extractColesStoreFromXml(response.data);
+    if (store.storeId) return store;
   } catch (error) {
     console.warn('  ⚠ Coles store locator failed:', error.message);
   }
 
-  return tryRapidApiNearestStoreId('Coles', location);
+  return tryRapidApiNearestStore('Coles', location);
 }
 
-/** Resolve the nearest Woolworths store number via the public proximity service. */
-async function resolveWoolworthsStoreId(location) {
+async function resolveColesStoreId(location) {
+  const store = await resolveColesStore(location);
+  return store.storeId;
+}
+
+/** Resolve the nearest Woolworths store via the public proximity service. */
+async function resolveWoolworthsStore(location) {
   const divisions = ['SUPERMARKETS', 'WOOLWORTHS', 'supermarkets'];
   const attempts = divisions.map((division) => {
     const url =
@@ -4831,26 +5315,33 @@ async function resolveWoolworthsStoreId(location) {
         timeout: STORE_LOCATOR_REQUEST_TIMEOUT_MS,
         headers: { Accept: 'application/json, text/plain, */*' },
       })
-      .then((response) => extractStoreIdFromPayload(response.data));
+      .then((response) => extractNearestStoreFromPayload(response.data));
   });
 
   const results = await Promise.allSettled(attempts);
   for (const result of results) {
-    if (result.status === 'fulfilled' && result.value) return result.value;
+    if (result.status === 'fulfilled' && result.value?.storeId) return result.value;
   }
 
-  return tryRapidApiNearestStoreId('Woolworths', location);
+  return tryRapidApiNearestStore('Woolworths', location);
 }
 
-/** Tra cứu store ID (chưa cache) — gọi song song Coles + Woolworths. */
+async function resolveWoolworthsStoreId(location) {
+  const store = await resolveWoolworthsStore(location);
+  return store.storeId;
+}
+
+/** Tra cứu store ID + tên (chưa cache) — gọi song song Coles + Woolworths. */
 async function resolveNearestStoreIdsUncached(location) {
-  const [colesStoreId, woolworthsStoreId] = await Promise.all([
-    resolveColesStoreId(location),
-    resolveWoolworthsStoreId(location),
+  const [coles, woolworths] = await Promise.all([
+    resolveColesStore(location),
+    resolveWoolworthsStore(location),
   ]);
   return {
-    colesStoreId,
-    woolworthsStoreId,
+    colesStoreId: coles.storeId,
+    colesStoreName: coles.storeName,
+    woolworthsStoreId: woolworths.storeId,
+    woolworthsStoreName: woolworths.storeName,
     expiresAt: Date.now() + NEAREST_STORE_CACHE_TTL_MS,
   };
 }
@@ -4879,14 +5370,16 @@ async function resolveNearestStoreIds(location) {
       console.warn('  ⚠ Nearest store lookup skipped:', err.message);
       return {
         colesStoreId: null,
+        colesStoreName: null,
         woolworthsStoreId: null,
+        woolworthsStoreName: null,
         expiresAt: Date.now() + NEAREST_STORE_CACHE_TTL_MS,
       };
     })
     .then((entry) => {
       if (entry.colesStoreId || entry.woolworthsStoreId) {
         console.log(
-          `  🏪 Nearest stores @ ${cacheKey}: Coles=${entry.colesStoreId || 'n/a'} | WW=${entry.woolworthsStoreId || 'n/a'}`
+          `  🏪 Nearest stores @ ${cacheKey}: Coles=${entry.colesStoreName || entry.colesStoreId || 'n/a'} | WW=${entry.woolworthsStoreName || entry.woolworthsStoreId || 'n/a'}`
         );
       }
       nearestStoreIdCache.set(cacheKey, entry);
@@ -4898,6 +5391,25 @@ async function resolveNearestStoreIds(location) {
 
   nearestStoreLookupInflight.set(cacheKey, lookupPromise);
   return lookupPromise;
+}
+
+/** Nearest store IDs merged with optional client overrides (postcode/GPS-aware). */
+async function resolveStoreIdsForRequest(location) {
+  const overrides = getRequestStoreOverrides();
+  let colesStoreId = overrides.colesStoreId;
+  let woolworthsStoreId = overrides.woolworthsStoreId;
+  let colesStoreName = null;
+  let woolworthsStoreName = null;
+
+  if (!colesStoreId || !woolworthsStoreId) {
+    const nearest = await resolveNearestStoreIds(location);
+    colesStoreId = colesStoreId || nearest.colesStoreId;
+    woolworthsStoreId = woolworthsStoreId || nearest.woolworthsStoreId;
+    colesStoreName = nearest.colesStoreName || null;
+    woolworthsStoreName = nearest.woolworthsStoreName || null;
+  }
+
+  return { colesStoreId, woolworthsStoreId, colesStoreName, woolworthsStoreName };
 }
 
 /** Build RapidAPI query params including geo coordinates and optional storeId. */
@@ -5005,12 +5517,22 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
   }
 
   let storeIds = opts.storeIds || { colesStoreId: null, woolworthsStoreId: null };
-  if (!opts.storeIds && !fast) {
+  if (!storeIds.colesStoreId || !storeIds.woolworthsStoreId) {
     try {
-      storeIds = await resolveNearestStoreIds(location);
+      const resolved = await resolveStoreIdsForRequest(location);
+      storeIds = {
+        colesStoreId: storeIds.colesStoreId || resolved.colesStoreId,
+        woolworthsStoreId: storeIds.woolworthsStoreId || resolved.woolworthsStoreId,
+      };
     } catch (storeErr) {
       console.warn(`  ⚠ Nearest store lookup failed (${supermarket}):`, storeErr.message);
     }
+  }
+
+  if (storeIds.colesStoreId || storeIds.woolworthsStoreId) {
+    console.log(
+      `  🏪 Store IDs for "${query}": Coles=${storeIds.colesStoreId || 'n/a'} | WW=${storeIds.woolworthsStoreId || 'n/a'}`
+    );
   }
 
   const isColes = supermarket === 'Coles';
@@ -5148,7 +5670,7 @@ async function fetchAllStoresForKeyword(keyword) {
   let storeIds = { colesStoreId: null, woolworthsStoreId: null };
   try {
     storeIds = await withTimeout(
-      resolveNearestStoreIds(location),
+      resolveStoreIdsForRequest(location),
       COMPARE_STORE_LOOKUP_MS,
       'compare store lookup'
     );
@@ -5228,8 +5750,15 @@ app.get('/api/compare', async (req, res) => {
   const location = getRequestLocation();
   const keywords = parseCompareKeywords(keyword);
 
+  let nearestStores = null;
+  try {
+    nearestStores = buildNearestStoresPayload(await resolveStoreIdsForRequest(location));
+  } catch (storeErr) {
+    console.warn('  ⚠ Compare nearest store names skipped:', storeErr.message);
+  }
+
   console.log(
-    `\n🔎 Searching: ${keywords.map((k) => `"${k}"`).join(', ')} @ ${location.latitude}, ${location.longitude} (${location.source})`
+    `\n🔎 Searching: ${keywords.map((k) => `"${k}"`).join(', ')} @ ${location.latitude}, ${location.longitude} (${location.source}${location.postcode ? `, postcode ${location.postcode}` : location.state ? `, ${location.state}` : ''})`
   );
 
   if (!RAPIDAPI_KEY && !MONGODB_URI) {
@@ -5262,6 +5791,7 @@ app.get('/api/compare', async (req, res) => {
       searchKeywords: keywords,
       similarPairs: [],
       storeErrors,
+      nearestStores,
     });
   }
 
@@ -5305,6 +5835,7 @@ app.get('/api/compare', async (req, res) => {
       searchKeywords: keywords,
       similarPairs: [],
       storeErrors,
+      nearestStores,
       error:
         colesError || woolworthsError
           ? 'One or more stores could not be reached. Details are shown per store below.'
@@ -5344,6 +5875,7 @@ app.get('/api/compare', async (req, res) => {
     searchKeywords: keywords,
     similarPairs,
     storeErrors: buildCompareStoreErrors(colesError, woolworthsError),
+    nearestStores,
   });
 });
 
@@ -5361,27 +5893,44 @@ app.get('/api/compare/barcode', async (req, res) => {
   if (!barcode || barcode.length < 8) {
     return res.status(400).json({
       error: 'Invalid barcode. Provide at least 8 digits.',
+      scannedBarcode: barcode || null,
     });
   }
 
   const location = getRequestLocation();
+  let storeIds = {
+    colesStoreId: null,
+    woolworthsStoreId: null,
+    colesStoreName: null,
+    woolworthsStoreName: null,
+  };
+  let nearestStores = null;
+  try {
+    storeIds = await resolveStoreIdsForRequest(location);
+    nearestStores = buildNearestStoresPayload(storeIds);
+  } catch (storeErr) {
+    console.warn('  ⚠ Barcode store lookup failed:', storeErr.message);
+  }
+
   console.log(
-    `\n📷 Barcode lookup: ${barcode} @ ${location.latitude}, ${location.longitude} (${location.source})`
+    `\n📷 Barcode lookup: ${barcode} @ ${location.latitude}, ${location.longitude} (${location.source}${location.postcode ? `, postcode ${location.postcode}` : ''})`
+  );
+  console.log(
+    `  📷 Store IDs: Coles=${storeIds.colesStoreName || storeIds.colesStoreId || 'n/a'} | Woolworths=${storeIds.woolworthsStoreName || storeIds.woolworthsStoreId || 'n/a'}`
   );
 
   const safeFetchRaw = async (supermarket) => {
     try {
-      const rawList = await fetchStoreRawList(supermarket, barcode);
-      const product = findProductByBarcodeInRawList(rawList, barcode, supermarket);
-      return { product, error: null };
+      const result = await fetchBarcodeProductForStore(supermarket, barcode, storeIds);
+      return { product: result.product, error: null, matchKind: result.matchKind };
     } catch (error) {
       if (shouldSoftFailStoreRawList(supermarket)) {
         logStoreSoftFail(supermarket, barcode, error, COMPARE_API_TIMEOUT_MS);
-        return { product: null, error: null };
+        return { product: null, error: null, matchKind: null };
       }
       const message = formatStoreError(supermarket, error);
       console.error(`  ❌ ${supermarket} barcode error:`, message);
-      return { product: null, error: message };
+      return { product: null, error: message, matchKind: null };
     }
   };
 
@@ -5393,18 +5942,23 @@ app.get('/api/compare/barcode', async (req, res) => {
   const colesResult =
     colesSettled.status === 'fulfilled'
       ? colesSettled.value
-      : { product: null, error: formatStoreError('Coles', colesSettled.reason) };
+      : { product: null, error: formatStoreError('Coles', colesSettled.reason), matchKind: null };
   const woolResult =
     woolSettled.status === 'fulfilled'
       ? woolSettled.value
-      : { product: null, error: formatStoreError('Woolworths', woolSettled.reason) };
+      : {
+          product: null,
+          error: formatStoreError('Woolworths', woolSettled.reason),
+          matchKind: null,
+        };
 
   const colesItem = colesResult.product;
   const woolItem = woolResult.product;
 
   if (!colesItem && !woolItem) {
+    console.log(`  📷 Barcode lookup FAILED — no match at either store for ${barcode}\n`);
     return res.status(404).json({
-      error: 'No product found with this barcode at Coles or Woolworths.',
+      error: 'Barcode not found. Try typing the product name instead.',
       scannedBarcode: barcode,
       storeErrors: {
         coles: colesResult.error,
@@ -5423,7 +5977,7 @@ app.get('/api/compare/barcode', async (req, res) => {
     : buildSimilarPairs(woolworthsItems, colesItems);
 
   console.log(
-    `  ✅ Barcode hit | Coles: ${colesItem ? 'yes' : 'no'} | WW: ${woolItem ? 'yes' : 'no'}\n`
+    `  ✅ Barcode hit | Coles: ${colesItem ? `yes (${colesResult.matchKind})` : 'no'} | WW: ${woolItem ? `yes (${woolResult.matchKind})` : 'no'}\n`
   );
 
   const alignedRows = [
@@ -5441,6 +5995,7 @@ app.get('/api/compare/barcode', async (req, res) => {
       coles: colesResult.error,
       woolworths: woolResult.error,
     },
+    nearestStores,
   });
 });
 
@@ -5554,10 +6109,16 @@ async function refreshSingleWatchItem(entry) {
     const primary = supermarket === 'Coles' ? colesMatch : woolMatch;
 
     if (colesMatch?.price != null) {
-      await recordPriceHistoryPoint(entry.id, 'Coles', colesMatch.price, entry.name);
+      await recordPriceHistoryPoint(entry.id, 'Coles', colesMatch.price, entry.name, {
+        productId: colesMatch.productId,
+        barcode: colesMatch.barcode,
+      });
     }
     if (woolMatch?.price != null) {
-      await recordPriceHistoryPoint(entry.id, 'Woolworths', woolMatch.price, entry.name);
+      await recordPriceHistoryPoint(entry.id, 'Woolworths', woolMatch.price, entry.name, {
+        productId: woolMatch.productId,
+        barcode: woolMatch.barcode,
+      });
     }
 
     if (!primary) {
@@ -5642,22 +6203,25 @@ app.post('/api/watchlist/refresh', async (req, res) => {
 /**
  * Price history for Chart.js accordion (Coles + Woolworths series per watchlist id).
  */
-app.get('/api/watchlist/price-history', async (req, res) => {
+app.get('/api/watchlist/price-history', handlePriceHistoryRequest);
+app.get('/api/price-history', handlePriceHistoryRequest);
+
+async function handlePriceHistoryRequest(req, res) {
   const watchId = String(req.query.watchId || '').trim();
   if (!watchId) {
     return res.status(400).json({ error: 'Missing watchId query parameter.' });
   }
 
   try {
-    const series = await getPriceHistoryForWatch(watchId);
-    return res.json({ watchId, series });
+    const history = await getPriceHistoryForWatch(watchId);
+    return res.json({ watchId, ...history });
   } catch (error) {
     console.error('  ❌ Price history error:', error.message);
     return res.status(500).json({
       error: error.message || 'Could not load price history.',
     });
   }
-});
+}
 
 // Health check endpoint
 app.get('/health', (_req, res) => {

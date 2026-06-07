@@ -20,7 +20,10 @@ const DEFAULT_SYDNEY_LOCATION = {
 
 /** Copy shown before the user chooses Share location / Not now. */
 const LOCATION_CONSENT_MESSAGE =
-  'Agree to share your location so we can update prices at the supermarkets nearest to you.';
+  'Share GPS, enter your postcode, or pick a state so we can show prices for your local Coles and Woolworths stores.';
+
+const BARCODE_NOT_FOUND_MESSAGE =
+  'Barcode not found. Try typing the product name instead.';
 
 /**
  * Coordinates forwarded on every API call (headers + query).
@@ -30,6 +33,8 @@ const LOCATION_CONSENT_MESSAGE =
 let userLocation = {
   latitude: DEFAULT_SYDNEY_LOCATION.latitude,
   longitude: DEFAULT_SYDNEY_LOCATION.longitude,
+  postcode: null,
+  state: null,
   source: 'pending',
   ready: false,
 };
@@ -46,8 +51,37 @@ let locationConsentModalOpen = false;
 /** Shared promise while the location popup is waiting for a choice. */
 let locationConsentPendingPromise = null;
 
-/** Tổng tiền tiết kiệm tích lũy trong giỏ (cộng dồn mỗi lần Add to cart) */
-let totalSaved = 0;
+/** Nearest resolved store names from last compare/barcode search. */
+let nearestStoresContext = { coles: null, woolworths: null };
+
+function hideNearestStoreBanner() {
+  document.getElementById('nearest-store-banner')?.classList.add('hidden');
+}
+
+function renderNearestStoreBanner(nearestStores) {
+  const banner = document.getElementById('nearest-store-banner');
+  const textEl = document.getElementById('nearest-store-banner-text');
+  if (!banner || !textEl) return;
+
+  nearestStoresContext = nearestStores || { coles: null, woolworths: null };
+  const colesLabel = nearestStores?.coles?.name || nearestStores?.coles?.label || null;
+  const woolLabel =
+    nearestStores?.woolworths?.name || nearestStores?.woolworths?.label || null;
+
+  if (!colesLabel && !woolLabel) {
+    hideNearestStoreBanner();
+    return;
+  }
+
+  const parts = [];
+  if (colesLabel) parts.push(`Coles at <strong>${escapeHtml(colesLabel)}</strong>`);
+  if (woolLabel) parts.push(`Woolworths at <strong>${escapeHtml(woolLabel)}</strong>`);
+  textEl.innerHTML = `Showing prices for ${parts.join(' and ')}`;
+  banner.classList.remove('hidden');
+}
+
+window.renderNearestStoreBanner = renderNearestStoreBanner;
+window.nearestStoresContext = nearestStoresContext;
 
 // --- Geolocation (explicit in-app consent, then browser API) ---
 
@@ -62,11 +96,21 @@ function loadSavedLocationConsent() {
     if (!parsed?.ready) return null;
     const lat = Number(parsed.latitude);
     const lng = Number(parsed.longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
+    if (!hasCoords && !parsed.postcode && !parsed.state) return null;
     return {
-      latitude: lat,
-      longitude: lng,
-      source: parsed.source === 'gps' ? 'gps' : 'default',
+      latitude: hasCoords ? lat : null,
+      longitude: hasCoords ? lng : null,
+      postcode: parsed.postcode || null,
+      state: parsed.state || null,
+      source:
+        parsed.source === 'gps'
+          ? 'gps'
+          : parsed.source === 'postcode'
+            ? 'postcode'
+            : parsed.source === 'state'
+              ? 'state'
+              : 'default',
       ready: true,
     };
   } catch {
@@ -81,6 +125,8 @@ function saveLocationConsentChoice() {
       JSON.stringify({
         latitude: userLocation.latitude,
         longitude: userLocation.longitude,
+        postcode: userLocation.postcode,
+        state: userLocation.state,
         source: userLocation.source,
         ready: true,
       })
@@ -166,15 +212,21 @@ function initLocationConsentUi() {
   const saved = loadSavedLocationConsent();
   if (saved) {
     userLocation = saved;
+    const postcodeInput = document.getElementById('location-postcode-input');
+    const stateSelect = document.getElementById('location-state-select');
+    if (postcodeInput && saved.postcode) postcodeInput.value = saved.postcode;
+    if (stateSelect && saved.state) stateSelect.value = saved.state;
     hideLocationConsentModal();
   }
 
   const allowBtn = document.getElementById('location-allow-btn');
   const declineBtn = document.getElementById('location-decline-btn');
+  const postcodeBtn = document.getElementById('location-postcode-btn');
   const backdrop = document.getElementById('location-modal-backdrop');
 
   allowBtn?.addEventListener('click', onLocationConsentAllow);
   declineBtn?.addEventListener('click', onLocationConsentDecline);
+  postcodeBtn?.addEventListener('click', onLocationPostcodeApply);
   backdrop?.addEventListener('click', onLocationConsentDecline);
 
   document.addEventListener('keydown', (event) => {
@@ -204,6 +256,8 @@ function onLocationConsentAllow() {
       userLocation = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
+        postcode: null,
+        state: null,
         source: 'gps',
         ready: true,
       };
@@ -214,9 +268,9 @@ function onLocationConsentAllow() {
       applyDefaultUserLocation('denied');
     },
     {
-      enableHighAccuracy: false,
-      timeout: 8000,
-      maximumAge: 5 * 60 * 1000,
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 60 * 1000,
     }
   );
 }
@@ -233,7 +287,34 @@ function applyDefaultUserLocation(_reason) {
   userLocation = {
     latitude: DEFAULT_SYDNEY_LOCATION.latitude,
     longitude: DEFAULT_SYDNEY_LOCATION.longitude,
+    postcode: null,
+    state: 'NSW',
     source: 'default',
+    ready: true,
+  };
+  finalizeLocationConsentUi();
+}
+
+/** Apply postcode (and optional state) — backend geocodes to nearest stores. */
+function onLocationPostcodeApply() {
+  if (userLocation.ready || locationRequestInFlight) return;
+
+  const input = document.getElementById('location-postcode-input');
+  const stateSelect = document.getElementById('location-state-select');
+  const postcode = String(input?.value || '').replace(/\D/g, '').slice(0, 4);
+  const state = stateSelect?.value || null;
+
+  if (postcode.length < 4 && !state) {
+    updateLocationNoticeUi('Enter a 4-digit AU postcode or choose a state.');
+    return;
+  }
+
+  userLocation = {
+    latitude: null,
+    longitude: null,
+    postcode: postcode.length >= 4 ? postcode : null,
+    state: state || null,
+    source: postcode.length >= 4 ? 'postcode' : 'state',
     ready: true,
   };
   finalizeLocationConsentUi();
@@ -256,11 +337,16 @@ function setLocationConsentButtonsDisabled(disabled) {
 
 /** Headers attached to every ShoppingSmart API request. */
 function getLocationRequestHeaders() {
-  return {
-    'X-Latitude': String(userLocation.latitude),
-    'X-Longitude': String(userLocation.longitude),
+  const headers = {
     'X-Location-Source': userLocation.source || 'default',
   };
+  if (Number.isFinite(userLocation.latitude) && Number.isFinite(userLocation.longitude)) {
+    headers['X-Latitude'] = String(userLocation.latitude);
+    headers['X-Longitude'] = String(userLocation.longitude);
+  }
+  if (userLocation.postcode) headers['X-Postcode'] = userLocation.postcode;
+  if (userLocation.state) headers['X-State'] = userLocation.state;
+  return headers;
 }
 
 /**
@@ -269,8 +355,12 @@ function getLocationRequestHeaders() {
  */
 function buildApiUrl(pathWithQuery) {
   const url = new URL(pathWithQuery, API_BASE);
-  url.searchParams.set('latitude', String(userLocation.latitude));
-  url.searchParams.set('longitude', String(userLocation.longitude));
+  if (userLocation.postcode) url.searchParams.set('postcode', userLocation.postcode);
+  if (userLocation.state) url.searchParams.set('state', userLocation.state);
+  if (Number.isFinite(userLocation.latitude) && Number.isFinite(userLocation.longitude)) {
+    url.searchParams.set('latitude', String(userLocation.latitude));
+    url.searchParams.set('longitude', String(userLocation.longitude));
+  }
   return url.toString();
 }
 
@@ -326,12 +416,22 @@ function updateLocationNoticeUi(optionalMessage) {
 
   if (userLocation.source === 'gps') {
     textEl.textContent =
-      'Using your location to show prices from supermarkets near you.';
+      'Using your GPS location to show prices from supermarkets near you.';
+    return;
+  }
+
+  if (userLocation.source === 'postcode' && userLocation.postcode) {
+    textEl.textContent = `Using postcode ${userLocation.postcode} for local store prices.`;
+    return;
+  }
+
+  if (userLocation.source === 'state' && userLocation.state) {
+    textEl.textContent = `Using ${userLocation.state} regional pricing (state centre).`;
     return;
   }
 
   textEl.textContent =
-    'Showing prices using Sydney, NSW as the default area. You can reload the page to share location later.';
+    'Showing Sydney, NSW default prices. Share GPS or enter your postcode for local store pricing.';
 }
 
 // --- Tiết kiệm / gamification (so sánh Coles vs Woolworths) ---
@@ -1211,20 +1311,39 @@ async function runCompareSearch({ keyword, barcode }) {
   if (colesCont) colesCont.innerHTML = '<p class="loading">Loading...</p>';
   hideRevealSection(summarySection);
   removeBarcodeScanBanner();
+  hideNearestStoreBanner();
 
   try {
     const response = await apiFetchCompare(url);
     const data = await response.json();
 
-    if (!response.ok && !data?.alignedRows?.length) {
+    const hasResults =
+      (Array.isArray(data?.alignedRows) &&
+        data.alignedRows.some((block) =>
+          block.matrixRows?.some((row) => row.woolworths || row.coles)
+        )) ||
+      (Array.isArray(data?.items) && data.items.length > 0);
+
+    if (barcode && !hasResults) {
+      const message = data?.error || BARCODE_NOT_FOUND_MESSAGE;
+      if (alignedRowsEl) {
+        alignedRowsEl.innerHTML = `<p class="error barcode-not-found">${escapeHtml(message)}</p>`;
+      }
+      if (wooliesCont) wooliesCont.innerHTML = '';
+      if (colesCont) colesCont.innerHTML = '';
+      hideRevealSection(summarySection);
+      setSearchResultsVisible(false);
+      removeBarcodeScanBanner();
+      return;
+    }
+
+    if (!response.ok && !hasResults) {
       throw new Error(data.error || 'Could not load data.');
     }
 
     displayCompareResults(data, { fromBarcode: Boolean(barcode) });
+    renderNearestStoreBanner(data.nearestStores);
 
-    const hasResults =
-      (Array.isArray(data?.alignedRows) && data.alignedRows.length > 0) ||
-      (Array.isArray(data?.items) && data.items.length > 0);
     setSearchResultsVisible(hasResults);
 
     if (hasResults) {
@@ -1236,6 +1355,9 @@ async function runCompareSearch({ keyword, barcode }) {
     }
   } catch (err) {
     let message = err.message || 'Could not load results.';
+    if (barcode) {
+      message = BARCODE_NOT_FOUND_MESSAGE;
+    }
     if (err.name === 'AbortError') {
       message =
         'Search timed out or was cancelled. Check your internet, then try again. Cached results may load faster on repeat searches.';

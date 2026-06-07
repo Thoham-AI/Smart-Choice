@@ -137,12 +137,105 @@
   }
 
   /**
+   * Draw dual-line chart from unified chartData [{ date, colesPrice, wooliesPrice }].
+   */
+  function renderPriceChartFromChartData(canvas, chartData, watchId) {
+    if (typeof Chart === 'undefined') {
+      throw new Error('Chart.js is not loaded.');
+    }
+
+    destroyWatchlistChart(watchId);
+
+    const theme = getChartTheme();
+    const labels = chartData.map((row) => row.date);
+    const colesData = chartData.map((row) => row.colesPrice ?? null);
+    const woolData = chartData.map((row) => row.wooliesPrice ?? null);
+
+    const chart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Coles',
+            data: colesData,
+            borderColor: theme.coles,
+            backgroundColor: theme.coles + '33',
+            tension: 0.35,
+            fill: false,
+            spanGaps: true,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+          },
+          {
+            label: 'Woolworths',
+            data: woolData,
+            borderColor: theme.woolworths,
+            backgroundColor: theme.woolworths + '33',
+            tension: 0.35,
+            fill: false,
+            spanGaps: true,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 420 },
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: theme.text, boxWidth: 12 },
+          },
+          tooltip: {
+            backgroundColor: theme.tooltipBg,
+            borderColor: theme.tooltipBorder,
+            borderWidth: 1,
+            titleColor: theme.text,
+            bodyColor: theme.text,
+            callbacks: {
+              label(ctx) {
+                const v = ctx.parsed.y;
+                if (v == null) return `${ctx.dataset.label}: —`;
+                return `${ctx.dataset.label}: ${formatPriceLabel(v)}`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: theme.text, maxRotation: 45, minRotation: 0 },
+            grid: { color: theme.grid },
+          },
+          y: {
+            ticks: {
+              color: theme.text,
+              callback: (value) => formatPriceLabel(value),
+            },
+            grid: { color: theme.grid },
+          },
+        },
+      },
+    });
+
+    watchlistChartRegistry.set(watchId, chart);
+    return chart;
+  }
+
+  /**
    * Draw or redraw the price history line chart on a watchlist card canvas.
    * @param {HTMLCanvasElement} canvas
    * @param {Array<{ supermarket: string, points: Array<{ date: string, price: number }> }>} series
    * @param {string} watchId
+   * @param {{ chartData?: Array<{ date: string, dateIso: string, colesPrice: number|null, wooliesPrice: number|null }> }} [options]
    */
-  function renderPriceChart(canvas, series, watchId) {
+  function renderPriceChart(canvas, series, watchId, options = {}) {
+    if (Array.isArray(options.chartData) && options.chartData.length) {
+      return renderPriceChartFromChartData(canvas, options.chartData, watchId);
+    }
+
     if (typeof Chart === 'undefined') {
       throw new Error('Chart.js is not loaded.');
     }
@@ -279,6 +372,16 @@
 
     try {
       const data = await fetchPriceHistory(watchId);
+
+      if (Array.isArray(data.chartData) && data.chartData.length) {
+        setChartStatus(
+          card,
+          data.days ? `${data.days} day${data.days === 1 ? '' : 's'} tracked (up to ${data.maxDays || 100})` : ''
+        );
+        renderPriceChart(canvas, data.series || [], watchId, { chartData: data.chartData });
+        return;
+      }
+
       const series = mergeHistoryWithFallback(data.series, entry);
 
       if (!series.length || !series.some((s) => s.points?.length)) {
@@ -350,6 +453,10 @@
       if (canvas && entry) {
         fetchPriceHistory(watchId)
           .then((data) => {
+            if (Array.isArray(data.chartData) && data.chartData.length) {
+              renderPriceChart(canvas, data.series || [], watchId, { chartData: data.chartData });
+              return;
+            }
             const series = mergeHistoryWithFallback(data.series, entry);
             renderPriceChart(canvas, series, watchId);
           })

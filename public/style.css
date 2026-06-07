@@ -282,6 +282,47 @@ body.location-modal-open {
     gap: 8px;
 }
 
+.location-postcode-row {
+    margin: 0 0 12px;
+}
+
+.location-postcode-label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.location-postcode-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.location-postcode-input {
+    width: 5.5rem;
+    font: inherit;
+    font-size: 0.875rem;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-primary);
+}
+
+.location-state-select {
+    font: inherit;
+    font-size: 0.875rem;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-primary);
+    min-width: 7rem;
+}
+
 .location-btn {
     font: inherit;
     font-size: 0.875rem;
@@ -314,6 +355,46 @@ body.location-modal-open {
     background: transparent;
     color: var(--text-secondary);
     border-color: var(--border-strong);
+}
+
+/* Nearest local store banner (above compare results) */
+.nearest-store-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(16, 185, 129, 0.08));
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.nearest-store-banner.hidden {
+    display: none;
+}
+
+.nearest-store-banner-icon {
+    font-size: 1.25rem;
+    line-height: 1.3;
+    flex-shrink: 0;
+}
+
+.nearest-store-banner-text {
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+}
+
+.nearest-store-banner-text strong {
+    font-weight: 700;
+    color: var(--accent);
+}
+
+[data-theme="dark"] .nearest-store-banner {
+    border-color: rgba(96, 165, 250, 0.35);
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.18), rgba(16, 185, 129, 0.1));
 }
 
 .location-btn--ghost:hover:not(:disabled) {

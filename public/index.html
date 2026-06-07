@@ -170,6 +170,35 @@
                     <p id="location-notice-text" class="location-notice-text">
                         Agree to share your location so we can update prices at the supermarkets nearest to you.
                     </p>
+                    <div class="location-postcode-row">
+                        <label class="location-postcode-label" for="location-postcode-input">Or enter postcode</label>
+                        <div class="location-postcode-fields">
+                            <input
+                                type="text"
+                                id="location-postcode-input"
+                                class="location-postcode-input"
+                                inputmode="numeric"
+                                pattern="[0-9]{4}"
+                                maxlength="4"
+                                placeholder="e.g. 0870"
+                                autocomplete="postal-code"
+                            />
+                            <select id="location-state-select" class="location-state-select" aria-label="State">
+                                <option value="">State (optional)</option>
+                                <option value="NSW">NSW</option>
+                                <option value="VIC">VIC</option>
+                                <option value="QLD">QLD</option>
+                                <option value="SA">SA</option>
+                                <option value="WA">WA</option>
+                                <option value="TAS">TAS</option>
+                                <option value="NT">NT</option>
+                                <option value="ACT">ACT</option>
+                            </select>
+                            <button type="button" id="location-postcode-btn" class="location-btn location-btn--ghost">
+                                Use postcode
+                            </button>
+                        </div>
+                    </div>
                     <div id="location-consent-actions" class="location-consent-actions">
                         <button
                             type="button"
@@ -278,6 +307,11 @@
             <p id="summary-text"></p>
         </section>
 
+        <div id="nearest-store-banner" class="nearest-store-banner hidden" role="status" aria-live="polite">
+            <span class="nearest-store-banner-icon" aria-hidden="true">🏪</span>
+            <p id="nearest-store-banner-text" class="nearest-store-banner-text"></p>
+        </div>
+
         <section id="aligned-compare-section" class="aligned-compare-section hidden">
             <h2>Compare by item</h2>
             <p class="aligned-compare-hint">Mỗi hàng ghép sản phẩm Woolworths và Coles theo thứ tự liên quan nhất. Ô nét đứt = siêu thị đó hết món để ghép ở hàng cuối.</p>
@@ -383,9 +417,9 @@
     <script src="/html5-qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-    <script src="/script.js?v=59"></script>
+    <script src="/script.js?v=60"></script>
     <script src="/barcode-scanner.js?v=4"></script>
-    <script src="/app.js?v=7"></script>
+    <script src="/app.js?v=8"></script>
     <script src="/pwa-register.js?v=2"></script>
 
     <!-- Vercel Analytics — production host only (avoids 404/MIME errors on localhost) -->
