@@ -368,6 +368,7 @@ function buildApiUrl(pathWithQuery) {
 let compareSearchAbortController = null;
 
 const COMPARE_FETCH_TIMEOUT_MS = 42000;
+const BARCODE_FETCH_TIMEOUT_MS = 55000;
 
 /**
  * fetch() wrapper: always forwards the latest known coordinates to the backend.
@@ -383,12 +384,13 @@ async function apiFetch(url, options = {}) {
 /**
  * fetch compare với timeout + hủy request cũ (tránh chồng "pork belly" + "prawn").
  */
-async function apiFetchCompare(url) {
+async function apiFetchCompare(url, options = {}) {
   compareSearchAbortController?.abort();
   compareSearchAbortController = new AbortController();
   const signal = compareSearchAbortController.signal;
 
-  const timeoutId = setTimeout(() => compareSearchAbortController.abort(), COMPARE_FETCH_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? COMPARE_FETCH_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => compareSearchAbortController.abort(), timeoutMs);
 
   try {
     return await apiFetch(url, { signal });
@@ -1356,7 +1358,9 @@ async function runCompareSearch({ keyword, barcode }) {
   hideNearestStoreBanner();
 
   try {
-    const response = await apiFetchCompare(url);
+    const response = await apiFetchCompare(url, {
+      timeoutMs: barcode ? BARCODE_FETCH_TIMEOUT_MS : COMPARE_FETCH_TIMEOUT_MS,
+    });
     const data = await response.json();
 
     const hasResults =
@@ -1401,8 +1405,9 @@ async function runCompareSearch({ keyword, barcode }) {
       message = BARCODE_NOT_FOUND_MESSAGE;
     }
     if (err.name === 'AbortError') {
-      message =
-        'Search timed out or was cancelled. Check your internet, then try again. Cached results may load faster on repeat searches.';
+      message = barcode
+        ? 'Barcode lookup timed out. Try again — the second scan is usually faster once cached.'
+        : 'Search timed out or was cancelled. Check your internet, then try again. Cached results may load faster on repeat searches.';
     }
     if (alignedRowsEl) {
       alignedRowsEl.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;

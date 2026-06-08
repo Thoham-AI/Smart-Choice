@@ -35,8 +35,11 @@ const COLES_MOBILE_API_SECRET =
   process.env.COLES_API_SECRET || 'e6ab96ff-453b-45ba-a2be-ae8d7c12cadf';
 const COLES_MOBILE_SEARCH_URL =
   'https://api.coles.com.au/customer/v1/coles/products/search';
-const BARCODE_DIRECT_API_TIMEOUT_MS = 12000;
-const BARCODE_NAME_LOOKUP_TIMEOUT_MS = 8000;
+const BARCODE_DIRECT_API_TIMEOUT_MS = 8000;
+const BARCODE_NAME_LOOKUP_TIMEOUT_MS = 4000;
+const BARCODE_SCAN_ROUTE_MAX_MS = 28000;
+const BARCODE_STORE_LOOKUP_MAX_MS = 4000;
+const BARCODE_SCAN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const COLES_HOST      = 'coles-australia-full-catalog-pricing-intelligence-api.p.rapidapi.com';
 const WOOLWORTHS_HOST = 'woolworths-australia-product-category-api.p.rapidapi.com';
 /** Supported supermarkets for compare + AI cart. */
@@ -152,6 +155,7 @@ const API_CACHE_COLLECTION = 'api_cache';
  */
 const PRICE_HISTORY_COLLECTION = 'price_history';
 const PRICE_HISTORY_MAX_DAYS = 100;
+const BARCODE_SCAN_COLLECTION = 'barcode_scans';
 const SITE_STATS_COLLECTION = 'site_stats';
 /** Single document id for global page view counter. */
 const SITE_STATS_PAGE_VIEWS_ID = 'page_views';
@@ -175,6 +179,7 @@ async function connectMongo() {
   return mongo.connectMongo({
     apiCacheCollection: API_CACHE_COLLECTION,
     priceHistoryCollection: PRICE_HISTORY_COLLECTION,
+    barcodeScanCollection: BARCODE_SCAN_COLLECTION,
   });
 }
 
@@ -316,6 +321,12 @@ function getPriceHistoryCollection() {
   const mongoDb = mongo.getDb();
   if (!mongoDb) return null;
   return mongoDb.collection(PRICE_HISTORY_COLLECTION);
+}
+
+function getBarcodeScanCollection() {
+  const mongoDb = mongo.getDb();
+  if (!mongoDb) return null;
+  return mongoDb.collection(BARCODE_SCAN_COLLECTION);
 }
 
 function getSiteStatsCollection() {
@@ -1769,51 +1780,93 @@ function logBarcodeRawSample(supermarket, rawList, limit = 3) {
 }
 
 /**
- * Match barcode in search results — exact field match, deep scan, then single-result fallback.
+ * Strict barcode match — only accept products whose API payload contains the scanned barcode.
+ * Avoids false positives (e.g. Woolworths column showing unrelated single search hits).
  */
-function findProductByBarcodeWithFallback(rawList, barcode, supermarket) {
+function findProductByBarcodeStrict(rawList, barcode, supermarket) {
   const exact = findProductByBarcodeInRawList(rawList, barcode, supermarket);
-  if (exact) return { product: exact, matchKind: 'barcode_field' };
+  if (exact?.supermarket === supermarket) {
+    return { product: exact, matchKind: 'barcode_field' };
+  }
 
   for (const raw of rawList) {
-    const codes = deepScanBarcodeDigits(raw);
+    const codes = new Set([...collectBarcodesFromRaw(raw), ...deepScanBarcodeDigits(raw)]);
     for (const code of codes) {
-      if (barcodesMatch(code, barcode)) {
-        const product = normalizeItem(raw, supermarket, { scannedBarcode: barcode });
-        if (product) return { product, matchKind: 'deep_scan' };
+      if (!barcodesMatch(code, barcode)) continue;
+      const product = normalizeItem(raw, supermarket, {
+        scannedBarcode: barcode,
+        barcodeVerified: true,
+      });
+      if (product?.supermarket === supermarket) {
+        return { product, matchKind: 'deep_scan' };
       }
-    }
-  }
-
-  if (rawList.length === 1) {
-    const product = normalizeItem(rawList[0], supermarket, { scannedBarcode: barcode });
-    if (product) return { product, matchKind: 'single_search_result' };
-  }
-
-  const target = normalizeBarcode(barcode);
-  for (const raw of rawList.slice(0, 8)) {
-    if (JSON.stringify(raw).includes(target)) {
-      const product = normalizeItem(raw, supermarket, { scannedBarcode: barcode });
-      if (product) return { product, matchKind: 'barcode_in_payload' };
     }
   }
 
   return { product: null, matchKind: null };
 }
 
-async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, options = {}) {
-  const variants = barcodeSearchVariants(barcode);
-  let lastRawList = [];
+/**
+ * Name-based fallback when barcode digits return nothing (Open Food Facts → text search).
+ */
+function findProductByNameInRawList(rawList, searchName, supermarket, scannedBarcode) {
+  if (!Array.isArray(rawList) || !rawList.length || !searchName) {
+    return { product: null, matchKind: null };
+  }
 
-  const tryMatchRawList = (rawList, sourceLabel) => {
+  const target = String(searchName).toLowerCase().trim();
+  let bestProduct = null;
+  let bestScore = 0;
+
+  for (const raw of rawList.slice(0, 12)) {
+    const product = normalizeItem(raw, supermarket, {
+      scannedBarcode,
+      barcodeVerified: false,
+      searchTerm: searchName,
+    });
+    if (!product || product.supermarket !== supermarket) continue;
+
+    const score = stringSimilarity.compareTwoStrings(target, String(product.name).toLowerCase());
+    if (score > bestScore) {
+      bestScore = score;
+      bestProduct = product;
+    }
+  }
+
+  if (bestProduct && bestScore >= 0.42) {
+    return { product: bestProduct, matchKind: 'name_similarity' };
+  }
+
+  return { product: null, matchKind: null };
+}
+
+/**
+ * Match barcode in search results — exact field match, deep scan, then single-result fallback.
+ * @deprecated Prefer findProductByBarcodeStrict for barcode scans.
+ */
+function findProductByBarcodeWithFallback(rawList, barcode, supermarket) {
+  return findProductByBarcodeStrict(rawList, barcode, supermarket);
+}
+
+async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, options = {}) {
+  const productName = String(options.productName || '').trim();
+  const isNameSearch = Boolean(productName);
+  const variants = isNameSearch
+    ? [productName]
+    : barcodeSearchVariants(barcode).slice(0, 2);
+
+  const matchRawList = (rawList, sourceLabel) => {
     if (!Array.isArray(rawList) || !rawList.length) return null;
-    lastRawList = rawList;
+
     console.log(
       `  📷 ${supermarket} barcode ${sourceLabel} → ${rawList.length} result(s)`
     );
     logBarcodeRawSample(supermarket, rawList);
 
-    const { product, matchKind } = findProductByBarcodeWithFallback(rawList, barcode, supermarket);
+    const { product, matchKind } = isNameSearch
+      ? findProductByNameInRawList(rawList, productName, supermarket, barcode)
+      : findProductByBarcodeStrict(rawList, barcode, supermarket);
+
     if (!product) return null;
 
     console.log(
@@ -1822,66 +1875,28 @@ async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, optio
     return { product, rawList, matchKind: `${sourceLabel}_${matchKind}`, error: null };
   };
 
-  // 1. Direct supermarket APIs (barcode as search term — bypasses Mongo/RapidAPI cache)
-  for (const variant of variants) {
+  // Direct supermarket APIs only — skip slow RapidAPI path for barcode scans.
+  for (const query of variants) {
     const directRaw = await fetchDirectStoreRawListForBarcode(
       supermarket,
-      variant,
+      query,
       storeIds
     );
-    const hit = tryMatchRawList(directRaw, 'direct_api');
+    const hit = matchRawList(directRaw, isNameSearch ? 'direct_name' : 'direct_api');
     if (hit) {
-      scheduleWriteApiCache(supermarket, variant, directRaw, getRequestLocation());
+      const location = getRequestLocation();
+      scheduleWriteApiCache(supermarket, query, directRaw, location);
+      if (!isNameSearch) {
+        scheduleWriteApiCache(supermarket, barcode, directRaw, location);
+      }
       return hit;
     }
   }
 
-  // 2. RapidAPI barcode search (force fresh — avoid stale empty cache from prior misses)
-  for (const variant of variants) {
-    try {
-      const rawList = await fetchStoreRawList(supermarket, variant, {
-        storeIds,
-        forceRefresh: true,
-      });
-      const hit = tryMatchRawList(rawList, 'rapidapi');
-      if (hit) return hit;
-    } catch (error) {
-      console.warn(`  ⚠ ${supermarket} RapidAPI barcode skipped:`, error.message);
-    }
-  }
-
-  // 3. Product-name search (Open Food Facts → text search on both chains)
-  const productName = String(options.productName || '').trim();
-  if (productName) {
-    for (const variant of variants) {
-      const directRaw = await fetchDirectStoreRawListForBarcode(
-        supermarket,
-        productName,
-        storeIds
-      );
-      const directHit = tryMatchRawList(directRaw, 'direct_name');
-      if (directHit) {
-        scheduleWriteApiCache(supermarket, variant, directRaw, getRequestLocation());
-        return directHit;
-      }
-    }
-
-    try {
-      const rawList = await fetchStoreRawList(supermarket, productName, {
-        storeIds,
-        forceRefresh: true,
-      });
-      const hit = tryMatchRawList(rawList, 'rapidapi_name');
-      if (hit) return hit;
-    } catch (error) {
-      console.warn(`  ⚠ ${supermarket} RapidAPI name fallback skipped:`, error.message);
-    }
-  }
-
   console.log(
-    `  📷 ${supermarket} barcode MISS for ${barcode} (tried ${variants.join(', ')}; last batch ${lastRawList.length} items)`
+    `  📷 ${supermarket} barcode MISS for ${barcode}${isNameSearch ? ` (name: "${productName}")` : ''}`
   );
-  return { product: null, rawList: lastRawList, matchKind: null, error: null };
+  return { product: null, rawList: [], matchKind: null, error: null };
 }
 
 /** Resolve a human-readable product name from public barcode databases (Open Food Facts). */
@@ -1927,11 +1942,88 @@ async function lookupBarcodeProductName(barcode) {
   return null;
 }
 
-/** Persist scanned barcode hits so the next scan can match from MongoDB price_history. */
-async function seedScannedBarcodeToMongo(barcode, colesItem, woolItem) {
-  const normalized = normalizeBarcode(barcode);
-  if (!normalized) return;
+/** Read a previously saved barcode scan from MongoDB (instant repeat scans). */
+async function tryReadBarcodeScanCache(barcode) {
+  if (!MONGODB_URI || isMongoInCooldown()) return null;
 
+  try {
+    return await withTimeout(
+      (async () => {
+        await connectMongo();
+        const collection = getBarcodeScanCollection();
+        if (!collection) return null;
+
+        const normalized = normalizeBarcode(barcode);
+        const doc = await collection.findOne({ _id: normalized });
+        if (!doc) return null;
+        if (doc.expiresAt && new Date(doc.expiresAt) <= new Date()) return null;
+
+        const colesItem = doc.coles ? { ...doc.coles, supermarket: 'Coles' } : null;
+        const woolItem = doc.woolworths
+          ? { ...doc.woolworths, supermarket: 'Woolworths' }
+          : null;
+        if (!colesItem && !woolItem) return null;
+
+        console.log(`  💾 Barcode cache hit: ${normalized}`);
+        return { colesItem, woolItem, fromCache: true };
+      })(),
+      API_CACHE_READ_TIMEOUT_MS,
+      'barcode scan cache read'
+    );
+  } catch (error) {
+    console.warn('  ⚠ Barcode scan cache read failed:', error.message);
+    return null;
+  }
+}
+
+/** Save full barcode scan result for instant repeat lookups. */
+async function saveBarcodeScanCache(barcode, colesItem, woolItem) {
+  const collection = getBarcodeScanCollection();
+  if (!collection) return false;
+
+  const normalized = normalizeBarcode(barcode);
+  const now = new Date();
+  const attachBarcode = (item) =>
+    item
+      ? {
+          ...item,
+          barcode: item.barcode || normalized,
+          barcodes: item.barcodes?.length ? item.barcodes : [normalized],
+        }
+      : null;
+
+  await collection.updateOne(
+    { _id: normalized },
+    {
+      $set: {
+        barcode: normalized,
+        coles: attachBarcode(colesItem),
+        woolworths: attachBarcode(woolItem),
+        updatedAt: now,
+        expiresAt: new Date(now.getTime() + BARCODE_SCAN_TTL_MS),
+      },
+    },
+    { upsert: true }
+  );
+  console.log(`  💾 Barcode scan saved: ${normalized}`);
+  return true;
+}
+
+/** Persist scanned barcode hits so the next scan can match from MongoDB. */
+async function seedScannedBarcodeToMongo(barcode, colesItem, woolItem) {
+  if (!MONGODB_URI) {
+    console.warn('  ⚠ Barcode seed skipped — MONGODB_URI not set');
+    return;
+  }
+
+  try {
+    await connectMongo();
+  } catch (error) {
+    console.warn('  ⚠ Barcode seed skipped — MongoDB connect failed:', error.message);
+    return;
+  }
+
+  const normalized = normalizeBarcode(barcode);
   const watchId = `barcode::${normalized}`;
   const seeds = [];
 
@@ -1954,13 +2046,55 @@ async function seedScannedBarcodeToMongo(barcode, colesItem, woolItem) {
   queueSeed(colesItem, 'Coles');
   queueSeed(woolItem, 'Woolworths');
 
+  try {
+    await saveBarcodeScanCache(barcode, colesItem, woolItem);
+  } catch (error) {
+    console.warn('  ⚠ Barcode scan cache write failed:', error.message);
+  }
+
   if (!seeds.length) return;
 
   const results = await Promise.allSettled(seeds);
   const saved = results.filter((r) => r.status === 'fulfilled').length;
+  const failed = results.filter((r) => r.status === 'rejected');
+  if (failed.length) {
+    console.warn(
+      `  ⚠ Barcode price_history seed partial failure (${failed.length}/${results.length})`
+    );
+  }
   if (saved) {
     console.log(`  💾 Barcode ${normalized} seeded to price_history (${saved} point(s))`);
   }
+}
+
+function buildBarcodeScanResponse(
+  barcode,
+  colesItem,
+  woolItem,
+  { colesResult = {}, woolResult = {}, nearestStores = null, fromCache = false } = {}
+) {
+  const colesItems = colesItem ? [colesItem] : [];
+  const woolworthsItems = woolItem ? [woolItem] : [];
+  const combined = [...colesItems, ...woolworthsItems];
+  const directPair = buildDirectComparePair(woolItem, colesItem);
+  const similarPairs = directPair
+    ? [directPair]
+    : buildSimilarPairs(woolworthsItems, colesItems);
+
+  return {
+    items: combined,
+    alignedRows: [buildAlignedCompareMatrixFromProducts(barcode, woolItem, colesItem)],
+    searchKeyword: barcode,
+    similarPairs,
+    scannedBarcode: barcode,
+    searchMode: 'barcode',
+    fromCache,
+    storeErrors: {
+      coles: colesResult.error || null,
+      woolworths: woolResult.error || null,
+    },
+    nearestStores,
+  };
 }
 
 /**
@@ -2957,10 +3091,10 @@ function normalizeItem(raw, supermarket, opts = {}) {
   const barcodeSet = collectBarcodesFromRaw(raw);
   const barcodes = [...barcodeSet];
   const scannedBarcode = opts.scannedBarcode ? normalizeBarcode(opts.scannedBarcode) : '';
-  if (scannedBarcode && !barcodes.includes(scannedBarcode)) {
-    barcodes.unshift(scannedBarcode);
-  }
-  const barcode = barcodes[0] || scannedBarcode || null;
+  const barcode =
+    barcodes[0] ||
+    (opts.barcodeVerified && scannedBarcode ? scannedBarcode : null) ||
+    null;
 
   const categoryMeta = buildCategoryMetaFromRaw(raw, name);
 
@@ -6258,113 +6392,147 @@ async function handleBarcodeScanRequest(req, res) {
     });
   }
 
-  const location = getRequestLocation();
-  let storeIds = {
-    colesStoreId: null,
-    woolworthsStoreId: null,
-    colesStoreName: null,
-    woolworthsStoreName: null,
-  };
-  let nearestStores = null;
   try {
-    storeIds = await resolveStoreIdsForRequest(location);
-    nearestStores = buildNearestStoresPayload(storeIds);
-  } catch (storeErr) {
-    console.warn('  ⚠ Barcode store lookup failed:', storeErr.message);
-  }
+    await withTimeout(
+      (async () => {
+        const location = getRequestLocation();
 
-  console.log(
-    `\n📷 Barcode lookup: ${barcode} @ ${location.latitude}, ${location.longitude} (${location.source}${location.postcode ? `, postcode ${location.postcode}` : ''})`
-  );
-  console.log(
-    `  📷 Store IDs: Coles=${storeIds.colesStoreName || storeIds.colesStoreId || 'n/a'} | Woolworths=${storeIds.woolworthsStoreName || storeIds.woolworthsStoreId || 'n/a'}`
-  );
+        const cached = await tryReadBarcodeScanCache(barcode);
+        if (cached?.colesItem || cached?.woolItem) {
+          let nearestStores = null;
+          try {
+            nearestStores = buildNearestStoresPayload(
+              await withTimeout(
+                resolveStoreIdsForRequest(location),
+                BARCODE_STORE_LOOKUP_MAX_MS,
+                'barcode store lookup'
+              )
+            );
+          } catch {
+            /* optional */
+          }
+          return res.json(
+            buildBarcodeScanResponse(barcode, cached.colesItem, cached.woolItem, {
+              nearestStores,
+              fromCache: true,
+            })
+          );
+        }
 
-  const safeFetchRaw = async (supermarket, options = {}) => {
-    try {
-      const result = await fetchBarcodeProductForStore(
-        supermarket,
-        barcode,
-        storeIds,
-        options
-      );
-      return { product: result.product, error: null, matchKind: result.matchKind };
-    } catch (error) {
-      if (shouldSoftFailStoreRawList(supermarket)) {
-        logStoreSoftFail(supermarket, barcode, error, COMPARE_API_TIMEOUT_MS);
-        return { product: null, error: null, matchKind: null };
-      }
-      const message = formatStoreError(supermarket, error);
-      console.error(`  ❌ ${supermarket} barcode error:`, message);
-      return { product: null, error: message, matchKind: null };
-    }
-  };
+        let storeIds = {
+          colesStoreId: null,
+          woolworthsStoreId: null,
+          colesStoreName: null,
+          woolworthsStoreName: null,
+        };
+        let nearestStores = null;
+        try {
+          storeIds = await withTimeout(
+            resolveStoreIdsForRequest(location),
+            BARCODE_STORE_LOOKUP_MAX_MS,
+            'barcode store lookup'
+          );
+          nearestStores = buildNearestStoresPayload(storeIds);
+        } catch (storeErr) {
+          console.warn('  ⚠ Barcode store lookup failed:', storeErr.message);
+        }
 
-  let [colesResult, woolResult] = await Promise.all([
-    safeFetchRaw('Coles'),
-    safeFetchRaw('Woolworths'),
-  ]);
+        console.log(
+          `\n📷 Barcode lookup: ${barcode} @ ${location.latitude}, ${location.longitude} (${location.source}${location.postcode ? `, postcode ${location.postcode}` : ''})`
+        );
+        console.log(
+          `  📷 Store IDs: Coles=${storeIds.colesStoreName || storeIds.colesStoreId || 'n/a'} | Woolworths=${storeIds.woolworthsStoreName || storeIds.woolworthsStoreId || 'n/a'}`
+        );
 
-  let colesItem = colesResult.product;
-  let woolItem = woolResult.product;
+        const safeFetchRaw = async (supermarket, options = {}) => {
+          try {
+            const result = await fetchBarcodeProductForStore(
+              supermarket,
+              barcode,
+              storeIds,
+              options
+            );
+            return { product: result.product, error: null, matchKind: result.matchKind };
+          } catch (error) {
+            if (shouldSoftFailStoreRawList(supermarket)) {
+              logStoreSoftFail(supermarket, barcode, error, BARCODE_DIRECT_API_TIMEOUT_MS);
+              return { product: null, error: null, matchKind: null };
+            }
+            const message = formatStoreError(supermarket, error);
+            console.error(`  ❌ ${supermarket} barcode error:`, message);
+            return { product: null, error: message, matchKind: null };
+          }
+        };
 
-  if (!colesItem && !woolItem) {
-    const productName = await lookupBarcodeProductName(barcode);
-    if (productName) {
-      console.log(`  📷 Retrying barcode lookup via product name: "${productName}"`);
-      [colesResult, woolResult] = await Promise.all([
-        safeFetchRaw('Coles', { productName }),
-        safeFetchRaw('Woolworths', { productName }),
-      ]);
-      colesItem = colesResult.product;
-      woolItem = woolResult.product;
-    }
-  }
+        let [colesResult, woolResult] = await Promise.all([
+          safeFetchRaw('Coles'),
+          safeFetchRaw('Woolworths'),
+        ]);
 
-  if (!colesItem && !woolItem) {
-    console.log(`  📷 Barcode lookup FAILED — no match at either store for ${barcode}\n`);
-    return res.status(404).json({
-      error: 'Barcode not found. Try typing the product name instead.',
+        let colesItem = colesResult.product;
+        let woolItem = woolResult.product;
+
+        if (!colesItem && !woolItem) {
+          const productName = await lookupBarcodeProductName(barcode);
+          if (productName) {
+            console.log(`  📷 Retrying barcode lookup via product name: "${productName}"`);
+            [colesResult, woolResult] = await Promise.all([
+              safeFetchRaw('Coles', { productName }),
+              safeFetchRaw('Woolworths', { productName }),
+            ]);
+            colesItem = colesResult.product;
+            woolItem = woolResult.product;
+          }
+        }
+
+        if (!colesItem && !woolItem) {
+          console.log(`  📷 Barcode lookup FAILED — no match at either store for ${barcode}\n`);
+          return res.status(404).json({
+            error: 'Barcode not found. Try typing the product name instead.',
+            scannedBarcode: barcode,
+            storeErrors: {
+              coles: colesResult.error,
+              woolworths: woolResult.error,
+            },
+          });
+        }
+
+        const attachScanBarcode = (item) => {
+          if (!item) return null;
+          return {
+            ...item,
+            barcode: item.barcode || barcode,
+            barcodes: item.barcodes?.length ? item.barcodes : [barcode],
+          };
+        };
+        colesItem = attachScanBarcode(colesItem);
+        woolItem = attachScanBarcode(woolItem);
+
+        await seedScannedBarcodeToMongo(barcode, colesItem, woolItem);
+
+        console.log(
+          `  ✅ Barcode hit | Coles: ${colesItem ? `yes (${colesResult.matchKind})` : 'no'} | WW: ${woolItem ? `yes (${woolResult.matchKind})` : 'no'}\n`
+        );
+
+        return res.json(
+          buildBarcodeScanResponse(barcode, colesItem, woolItem, {
+            colesResult,
+            woolResult,
+            nearestStores,
+          })
+        );
+      })(),
+      BARCODE_SCAN_ROUTE_MAX_MS,
+      'barcode scan'
+    );
+  } catch (error) {
+    console.error('  ❌ Barcode route error:', error.message);
+    return res.status(504).json({
+      error:
+        'Barcode lookup timed out. Try again in a moment — repeat scans are faster once cached.',
       scannedBarcode: barcode,
-      storeErrors: {
-        coles: colesResult.error,
-        woolworths: woolResult.error,
-      },
     });
   }
-
-  await seedScannedBarcodeToMongo(barcode, colesItem, woolItem);
-
-  const colesItems = colesItem ? [colesItem] : [];
-  const woolworthsItems = woolItem ? [woolItem] : [];
-  const combined = [...colesItems, ...woolworthsItems];
-
-  const directPair = buildDirectComparePair(woolItem, colesItem);
-  const similarPairs = directPair
-    ? [directPair]
-    : buildSimilarPairs(woolworthsItems, colesItems);
-
-  console.log(
-    `  ✅ Barcode hit | Coles: ${colesItem ? `yes (${colesResult.matchKind})` : 'no'} | WW: ${woolItem ? `yes (${woolResult.matchKind})` : 'no'}\n`
-  );
-
-  const alignedRows = [
-    buildAlignedCompareMatrixFromProducts(barcode, woolItem, colesItem),
-  ];
-
-  res.json({
-    items: combined,
-    alignedRows,
-    searchKeyword: barcode,
-    similarPairs,
-    scannedBarcode: barcode,
-    searchMode: 'barcode',
-    storeErrors: {
-      coles: colesResult.error,
-      woolworths: woolResult.error,
-    },
-    nearestStores,
-  });
 }
 
 app.get('/api/compare/barcode', handleBarcodeScanRequest);
