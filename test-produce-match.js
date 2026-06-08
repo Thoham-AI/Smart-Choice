@@ -11,9 +11,13 @@ const {
   scoreSmartMatchPair,
   scoreProductPair,
   buildSmartComparePairs,
+  pickBestProductMatch,
   matchQualifiersCompatible,
   produceVariantConflict,
   varietiesCompatible,
+  hasFoodStateFormMismatch,
+  hasPackagingFormMismatch,
+  evaluatePairingGuardrails,
 } = __matchingTest__;
 
 function assert(cond, msg) {
@@ -77,5 +81,101 @@ const { pairs } = buildSmartComparePairs([woolBroccoli], [colesChineseBroccoli, 
 assert(pairs.length === 1, 'should pair one row');
 assert(/broccoli/i.test(pairs[0].coles.name), 'should pair with broccoli');
 assert(!/chinese|asian|choy/i.test(pairs[0].coles.name), 'must not pair Chinese broccoli variant');
+
+// Fresh cucumber must not pair with pickled jar cucumber
+const woolCucumber = {
+  name: 'Fresh Cucumber Lebanese 1 each',
+  price: 2.5,
+  supermarket: 'Woolworths',
+  categoryBucket: 'fruit_veg',
+};
+const colesPickledCucumber = {
+  name: 'Coles Green Leaf Pickled Cucumber 680g Jar',
+  price: 4.5,
+  supermarket: 'Coles',
+  categoryBucket: 'pantry',
+};
+const colesFreshCucumber = {
+  name: 'Coles Fresh Lebanese Cucumber 1 each',
+  price: 2.8,
+  supermarket: 'Coles',
+  categoryBucket: 'fruit_veg',
+};
+
+assert(hasFoodStateFormMismatch(woolCucumber.name, colesPickledCucumber.name), 'cucumber vs pickle state mismatch');
+assert(
+  evaluatePairingGuardrails(
+    woolCucumber.name,
+    woolCucumber,
+    colesPickledCucumber.name,
+    colesPickledCucumber
+  ),
+  'cucumber vs pickle guardrail reject'
+);
+assert(scoreSmartMatchPair(woolCucumber, colesPickledCucumber) < 0, 'pickled cucumber smart pair rejected');
+assert(scoreProductPair(woolCucumber, colesPickledCucumber) === 0, 'pickled cucumber legacy pair rejected');
+assert(scoreSmartMatchPair(woolCucumber, colesFreshCucumber) >= 0.55, 'fresh cucumber pair allowed');
+
+const { pairs: cucumberPairs } = buildSmartComparePairs(
+  [woolCucumber],
+  [colesPickledCucumber, colesFreshCucumber]
+);
+assert(cucumberPairs.length === 1, 'cucumber should pair one row');
+assert(!/pickled|jar/i.test(cucumberPairs[0].coles.name), 'must not pair pickled jar cucumber');
+
+// Whole 8 kg watermelon must not pair with 600 g pre-cut fingers
+const woolWatermelon = {
+  name: 'Seedless Watermelon Whole 8kg',
+  price: 12,
+  supermarket: 'Woolworths',
+  categoryBucket: 'fruit_veg',
+};
+const colesWatermelonFingers = {
+  name: 'Coles Watermelon Fingers 600g',
+  price: 6,
+  supermarket: 'Coles',
+  categoryBucket: 'fruit_veg',
+};
+const colesWholeWatermelon = {
+  name: 'Coles Seedless Watermelon Whole Cut 8kg',
+  price: 11.5,
+  supermarket: 'Coles',
+  categoryBucket: 'fruit_veg',
+};
+
+assert(
+  hasPackagingFormMismatch(
+    woolWatermelon.name,
+    woolWatermelon,
+    colesWatermelonFingers.name,
+    colesWatermelonFingers
+  ),
+  'watermelon whole vs fingers packaging mismatch'
+);
+assert(scoreSmartMatchPair(woolWatermelon, colesWatermelonFingers) < 0, 'watermelon fingers smart pair rejected');
+assert(scoreProductPair(woolWatermelon, colesWatermelonFingers) === 0, 'watermelon fingers legacy pair rejected');
+
+const { pairs: melonPairs, unmatchedColes: melonUnmatched } = buildSmartComparePairs(
+  [woolWatermelon],
+  [colesWatermelonFingers, colesWholeWatermelon]
+);
+assert(melonPairs.length === 1, 'watermelon should pair one row');
+assert(!/fingers/i.test(melonPairs[0].coles.name), 'must not pair watermelon fingers');
+assert(melonUnmatched.some((p) => /fingers/i.test(p.name)), 'fingers should remain unmatched');
+
+// Coles must never cross-pair with another Coles item
+const colesOnlyA = { name: 'Coles Fresh Broccoli 1 each', price: 3.8, supermarket: 'Coles' };
+const colesOnlyB = { name: 'Coles Broccoli Florets 350g', price: 4.1, supermarket: 'Coles' };
+const { pairs: colesCrossPairs } = buildSmartComparePairs([colesOnlyA], [colesOnlyB]);
+assert(colesCrossPairs.length === 0, 'Coles vs Coles must not pair');
+
+// pickBestProductMatch should not return pickled cucumber for fresh intent
+const cucumberListItem = { keyword: 'cucumber', quantity: 1, unit: 'each' };
+const cucumberPick = pickBestProductMatch(
+  [colesPickledCucumber, colesFreshCucumber],
+  'cucumber',
+  cucumberListItem
+);
+assert(cucumberPick.product && !/pickled|jar/i.test(cucumberPick.product.name), 'pickBest avoids pickled cucumber');
 
 console.log('test-produce-match.js: all assertions passed');

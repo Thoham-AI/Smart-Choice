@@ -2506,7 +2506,30 @@ const MIN_PAIR_NAME_SIMILARITY = 0.52;
 /** Rau/trái cây chỉ trùng một từ gốc (vd. "broccoli") cần sim cao hơn. */
 const MIN_FRESH_SHALLOW_TOKEN_SIMILARITY = 0.68;
 
-const PRODUCT_MATCHING_RULES = `You are a strict grocery price analyzer. When matching products between Coles and Woolworths, you MUST match raw ingredients with raw ingredients. Never match raw meat (e.g., chicken thigh fillets) with processed food (e.g., chicken burgers or nuggets), even if they share keywords. Always prioritize the alternative item that offers the lowest price per kilogram ($/kg) and matches the exact form of the user's intent.`;
+const PRODUCT_MATCHING_RULES = `You are a strict grocery price analyzer for Australian supermarkets (Coles and Woolworths). When matching or pairing products across stores, you MUST obey these rules in order:
+
+1. STATE/FORM CONSISTENCY (Đồng nhất trạng thái thực phẩm):
+   - Fresh/Raw produce must NEVER be paired with Processed, Pickled, Canned, Jarred, Frozen, Dried, or other value-added prepared items — even if they share a keyword.
+   - FORBIDDEN pairs include: fresh cucumber ↔ pickled jar cucumber ("Green Leaf Pickled Cucumber"); whole fresh watermelon ↔ pre-cut fruit tray ("Watermelon Fingers"); raw chicken thigh ↔ chicken nuggets/burgers.
+   - Fresh cucumber matches only fresh cucumber. Whole fruit matches only whole fresh fruit of the same type.
+
+2. UNIT & PACK-TYPE GUARDRAILS (Chặn lệch kích thước quá lớn):
+   - Do NOT pair whole bulk produce (e.g. 8 kg whole watermelon, per-kg loose cucumber) with small convenience pre-cut packs (e.g. 600 g fruit fingers/slices/trays) unless absolutely no equivalent exists in that store.
+   - If forced to pair mismatched pack types, you MUST NOT present a direct apples-to-apples price comparison — flag a major packaging discrepancy explicitly (e.g. "whole 8 kg vs 600 g pre-cut tray — not directly comparable").
+   - Prefer same pack form: whole↔whole, per-kg↔per-kg, pre-cut tray↔pre-cut tray, jar↔jar.
+
+3. MATHEMATICAL SANITIZATION:
+   - Before generating any unit-conversion pricing note (e.g. "$X/kg, converted for 2kg"), verify the target product's base category AND food state match the requested item.
+   - Never convert weights/volumes of liquids, pickles, jams, sauces, or processed jarred goods to match fresh raw produce weights.
+   - Never apply per-kg scaling across mismatched forms (pickled ≠ fresh, tray ≠ whole, drained weight ≠ fresh weight).
+
+4. STRICT JSON OUTPUT — NO FORCED BAD MATCHES:
+   - When resolving each list item across stores, return a JSON object per line with "coles" and "woolworths" fields.
+   - If a high-confidence match with the EXACT same form and food state is not found in a store, set that store field to null — never substitute a keyword-similar but semantically different product.
+   - A match is high-confidence only when: same ingredient, same fresh/processed state, same pack type (whole vs pre-cut vs jar), and comparable unit size.
+   - Prefer null over a misleading forced pair; downstream logic may impute rival prices rather than show $0.
+
+Always prioritize the lowest $/kg only among products that pass ALL rules above.`;
 
 function searchIntentSuggestsProcessedFood(keyword, listItem = {}) {
   const norm = normalizeNameForMatch(stripWeightFromText(keyword || listItem.keyword || ''));
@@ -2553,6 +2576,156 @@ function nameSuggestsProcessedPreparedFood(displayName) {
   const nameNorm = normalizeNameForMatch(displayName);
   if (!nameNorm) return false;
   return PROCESSED_FOOD_NEGATIVE_PATTERNS.some((pattern) => pattern.test(nameNorm));
+}
+
+/** Pickled / jarred / canned — không ghép với tươi sống. */
+const PRESERVED_FOOD_STATE_KEYWORDS = [
+  'pickled',
+  'pickle',
+  'pickles',
+  'jar',
+  'jarred',
+  'canned',
+  'tinned',
+  'brine',
+  'preserved',
+];
+
+/** Gói tiện lợi cắt sẵn — fingers, tray, pre-cut… */
+const CONVENIENCE_PRECUT_HINTS = [
+  'fingers',
+  'finger',
+  'pre cut',
+  'precut',
+  'pre-cut',
+  'pre sliced',
+  'presliced',
+  'pre-sliced',
+  'fruit salad',
+  'snack pack',
+  'snack cup',
+  'ready to eat',
+  'cut fruit',
+  'fruit tray',
+  'fruit platter',
+];
+
+/** Trái/rau nguyên khối / bán theo kg — whole, loose, ≥2 kg. */
+const BULK_WHOLE_PRODUCE_HINTS = ['whole', 'loose', 'seedless'];
+
+/** Tỷ lệ khối lượng tối thiểu khi ghép trái/rau tươi (600 g vs 8 kg → loại). */
+const FRESH_PRODUCE_MIN_WEIGHT_RATIO = 0.35;
+
+function nameSuggestsPreservedFoodState(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  if (!nameNorm) return false;
+  return PRESERVED_FOOD_STATE_KEYWORDS.some((hint) =>
+    hint.includes(' ') ? nameNorm.includes(hint) : haystackHasWord(nameNorm, hint)
+  );
+}
+
+function nameSuggestsFrozenFoodState(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  return /\bfrozen\b/.test(nameNorm);
+}
+
+function searchIntentSuggestsConveniencePack(keyword, listItem = {}) {
+  const norm = normalizeNameForMatch(stripWeightFromText(keyword || listItem.keyword || ''));
+  if (!norm) return false;
+  return nameNormHasAnyHint(norm, CONVENIENCE_PRECUT_HINTS);
+}
+
+function getProductWeightGrams(name, product = null) {
+  const size = extractSizeInfo(name);
+  if (size.grams != null && size.grams > 0) return size.grams;
+  const packKg = product?.packWeightKg ?? getPackWeightKgFromProduct(name, product || {});
+  if (packKg != null && packKg > 0) return packKg * 1000;
+  return null;
+}
+
+function nameSuggestsBulkWholeProduce(name, product = null) {
+  const nameNorm = normalizeNameForMatch(name);
+  if (!nameNorm) return false;
+  if (nameNormHasAnyHint(nameNorm, BULK_WHOLE_PRODUCE_HINTS)) return true;
+  if (/\bper\s*kg\b/.test(nameNorm) || /\bper\s*kilo\b/.test(nameNorm)) return true;
+  const grams = getProductWeightGrams(name, product);
+  return grams != null && grams >= 2000;
+}
+
+function nameSuggestsConveniencePreCut(name, product = null) {
+  const nameNorm = normalizeNameForMatch(name);
+  if (!nameNorm) return false;
+  if (nameNormHasAnyHint(nameNorm, CONVENIENCE_PRECUT_HINTS)) return true;
+  if (/\b(tray|wedges?|slices?)\b/.test(nameNorm) && isFreshFoodCategory(name)) return true;
+  const grams = getProductWeightGrams(name, product);
+  return grams != null && grams > 0 && grams <= 800 && /\b(tray|wedge|slice|finger|cut)\b/.test(nameNorm);
+}
+
+/** Một bên muối/ngâm/hộp — bên kia tươi sống → không ghép. */
+function hasFoodStateFormMismatch(nameA, nameB) {
+  const preservedA = nameSuggestsPreservedFoodState(nameA);
+  const preservedB = nameSuggestsPreservedFoodState(nameB);
+  if (preservedA !== preservedB) return true;
+  const frozenA = nameSuggestsFrozenFoodState(nameA);
+  const frozenB = nameSuggestsFrozenFoodState(nameB);
+  if (frozenA !== frozenB) return true;
+  return false;
+}
+
+/** Nguyên khối / số lượng lớn ↔ gói cắt sẵn nhỏ → không ghép. */
+function hasPackagingFormMismatch(nameA, productA, nameB, productB) {
+  const bulkA = nameSuggestsBulkWholeProduce(nameA, productA);
+  const bulkB = nameSuggestsBulkWholeProduce(nameB, productB);
+  const convA = nameSuggestsConveniencePreCut(nameA, productA);
+  const convB = nameSuggestsConveniencePreCut(nameB, productB);
+  if ((bulkA && convB) || (convA && bulkB)) return true;
+
+  const gramsA = getProductWeightGrams(nameA, productA);
+  const gramsB = getProductWeightGrams(nameB, productB);
+  const freshPair = isFreshFoodCategory(nameA) && isFreshFoodCategory(nameB);
+
+  if (freshPair && gramsA != null && gramsB != null) {
+    const ratio = Math.min(gramsA, gramsB) / Math.max(gramsA, gramsB);
+    if (ratio < FRESH_PRODUCE_MIN_WEIGHT_RATIO) return true;
+    const maxG = Math.max(gramsA, gramsB);
+    const minG = Math.min(gramsA, gramsB);
+    if (maxG >= 3000 && minG <= 1000) return true;
+  }
+
+  return false;
+}
+
+function isSameSupermarketCrossPair(productA, productB) {
+  const storeA = productA?.supermarket;
+  const storeB = productB?.supermarket;
+  return Boolean(storeA && storeB && storeA === storeB);
+}
+
+/** Guardrails chung — dùng ở scoreProductPair, scoreSmartMatchPair, buildSmartComparePairs. */
+function evaluatePairingGuardrails(nameA, productA, nameB, productB) {
+  if (isSameSupermarketCrossPair(productA, productB)) {
+    return 'same supermarket cross-pair';
+  }
+  if (hasFoodStateFormMismatch(nameA, nameB)) {
+    return 'food state/form mismatch (fresh vs preserved/processed)';
+  }
+  if (hasPackagingFormMismatch(nameA, productA, nameB, productB)) {
+    return 'packaging/weight mismatch (bulk whole vs convenience pre-cut)';
+  }
+  return null;
+}
+
+function isFreshProduceCandidateForIntent(name, product, keyword, listItem = {}) {
+  if (!isProduceSearchIntent(keyword, listItem)) return true;
+  if (searchIntentSuggestsProcessedFood(keyword, listItem)) return true;
+  if (nameSuggestsPreservedFoodState(name)) return false;
+  if (
+    !searchIntentSuggestsConveniencePack(keyword, listItem) &&
+    nameSuggestsConveniencePreCut(name, product)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** $/kg để sort — ưu tiên pricePerKg, suy ra từ gói, cuối cùng pack price. */
@@ -3784,6 +3957,7 @@ function filterProductsForSearchIntent(products, keyword, listItem = {}) {
       if (nameSuggestsPackagedDrink(name)) return false;
       if (nameSuggestsNonFreshProduceSnack(name)) return false;
       if (resolveProductBucket(p) === CATEGORY_BUCKETS.DRINKS) return false;
+      if (!isFreshProduceCandidateForIntent(name, p, keyword, listItem)) return false;
       return (
         productNameMatchesProduceKeyword(name, keyword) ||
         looksLikeLooseFreshProduceName(name) ||
@@ -4085,17 +4259,17 @@ function extractSizeInfo(name) {
  * - conflict: 2kg vs 1kg, 6-pack vs đơn lẻ → không ghép
  * - mismatch_one_sided: một bên có size, bên kia không → phạt điểm
  */
-function checkSizeCompatibility(nameA, nameB) {
-  // Thịt/rau tươi: cân nặng khay thay đổi → không loại vì lệch 500g vs 1kg
-  if (
-    freshFoodCorePhraseMatch(nameA, nameB) ||
-    (isFreshFoodCategory(nameA) && isFreshFoodCategory(nameB))
-  ) {
-    return 'ok';
+function checkSizeCompatibility(nameA, nameB, productA = null, productB = null) {
+  if (hasPackagingFormMismatch(nameA, productA, nameB, productB)) {
+    return 'conflict';
   }
 
   const a = extractSizeInfo(nameA);
   const b = extractSizeInfo(nameB);
+  const freshPair =
+    freshFoodCorePhraseMatch(nameA, nameB) ||
+    (isFreshFoodCategory(nameA) && isFreshFoodCategory(nameB));
+  const minWeightRatio = freshPair ? FRESH_PRODUCE_MIN_WEIGHT_RATIO : 0.85;
 
   if (a.packCount !== b.packCount && (a.packCount > 1 || b.packCount > 1)) {
     return 'conflict';
@@ -4103,7 +4277,7 @@ function checkSizeCompatibility(nameA, nameB) {
 
   if (a.grams != null && b.grams != null) {
     const ratio = Math.min(a.grams, b.grams) / Math.max(a.grams, b.grams);
-    if (ratio < 0.85) return 'conflict';
+    if (ratio < minWeightRatio) return 'conflict';
     return 'ok';
   }
 
@@ -4124,6 +4298,14 @@ function scoreProductPair(woolInput, colesInput) {
   const woolNorm = normalizeNameForMatch(woolName);
   const colesNorm = normalizeNameForMatch(colesName);
   if (!woolNorm || !colesNorm) return 0;
+
+  const guardrailReason = evaluatePairingGuardrails(
+    woolName,
+    woolInput,
+    colesName,
+    colesInput
+  );
+  if (guardrailReason) return 0;
 
   // Drinks ↔ Fresh (vd: H2juice Watermelon vs Seedless Watermelon) → không ghép
   if (!areProductCategoriesCompatible(woolInput, colesInput)) return 0;
@@ -4149,7 +4331,7 @@ function scoreProductPair(woolInput, colesInput) {
 
   if (!varietiesCompatible(woolName, colesName)) return 0;
 
-  const sizeStatus = checkSizeCompatibility(woolName, colesName);
+  const sizeStatus = checkSizeCompatibility(woolName, colesName, woolInput, colesInput);
   if (sizeStatus === 'conflict') return 0;
 
   let score = nameSim;
@@ -4181,6 +4363,7 @@ function scoreProductForKeyword(
   if (nameSuggestsNonFreshProduceSnack(displayName)) return 0;
 
   if (nameSuggestsProcessedNotCoreIngredient(displayName, keyword)) return 0;
+  if (!isFreshProduceCandidateForIntent(displayName, productRef, keyword, listItem)) return 0;
 
   const coreKeyword = stripWeightFromText(keyword);
   const query = `${coreKeyword} ${hintText}`.trim();
@@ -4310,6 +4493,7 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
           productNameMatchesProduceKeyword(name, keyword) &&
           !nameSuggestsPackagedDrink(name) &&
           !nameSuggestsNonFreshProduceSnack(name) &&
+          isFreshProduceCandidateForIntent(name, p, keyword, listItem) &&
           resolveProductBucket(p) !== CATEGORY_BUCKETS.DRINKS
         );
       });
@@ -4449,6 +4633,14 @@ function scoreSmartMatchPair(woolProduct, colesProduct, opts = {}) {
 
   if (!woolNorm || !colesNorm) return reject('empty product name');
 
+  const guardrailReason = evaluatePairingGuardrails(
+    woolName,
+    woolProduct,
+    colesName,
+    colesProduct
+  );
+  if (guardrailReason) return reject(guardrailReason);
+
   if (!areProductCategoriesCompatible(woolProduct, colesProduct)) {
     return reject('incompatible product categories');
   }
@@ -4522,12 +4714,12 @@ function scoreSmartMatchPair(woolProduct, colesProduct, opts = {}) {
     freshPhraseBonus = 1.5;
   }
 
-  const sizeStatus = checkSizeCompatibility(woolName, colesName);
+  const sizeStatus = checkSizeCompatibility(woolName, colesName, woolProduct, colesProduct);
   let sizeAdj = 0;
   if (sizeStatus === 'conflict') {
-    score -= 4;
-    sizeAdj = -4;
-  } else if (sizeStatus === 'ok') {
+    return reject(`size/pack conflict (${sizeStatus})`);
+  }
+  if (sizeStatus === 'ok') {
     score += 0.5;
     sizeAdj = 0.5;
   }
@@ -4576,6 +4768,7 @@ function buildSmartComparePairs(woolworthsOptions, colesOptions) {
 
     colesOptions.forEach((colesItem, idx) => {
       if (usedColesIndexes.has(idx)) return;
+      if (isSameSupermarketCrossPair(woolItem, colesItem)) return;
 
       const score = scoreSmartMatchPair(woolItem, colesItem);
       if (score < SMART_MATCH_MIN_PAIR_SCORE) return;
@@ -5069,20 +5262,22 @@ function formatRequestKeywordLabel(request) {
 // 3c. AI SHOPPING LIST – PARSE PROMPT & TỐI ƯU GIỎ
 // ============================================================
 
-const SHOPPING_LIST_SYSTEM_PROMPT = `You extract grocery shopping list items from natural language.
+const SHOPPING_LIST_SYSTEM_PROMPT = `You extract grocery shopping list items from natural language for the AI Cart Optimizer.
 Return ONLY valid JSON: an array of objects with exactly these fields:
-- "keyword": English search term for Australian supermarkets (e.g. "rice", "belly pork", "milk")
+- "keyword": English search term for Australian supermarkets (e.g. "rice", "belly pork", "milk", "fresh cucumber", "watermelon")
 - "quantity": number (default 1)
 - "unit": one of kg, g, L, ml, each, pack, bunch
 
-Rules:
+Parsing rules:
 - Use simple product keywords suitable for Coles and Woolworths search.
 - Keep full raw-ingredient phrases intact (e.g. "chicken thigh", "pork belly", "beef mince") — do not shorten to generic "chicken" or "meat".
+- Preserve food state/form in keywords when the user implies fresh/raw produce (e.g. "cucumber" → "fresh cucumber", "watermelon" → "watermelon" not "watermelon juice" or "watermelon fingers").
+- Do not collapse distinct forms: pickled/canned/frozen/pre-cut items are different from fresh whole produce — only emit those forms if the user explicitly asked for them.
 - Convert volumes: 2L → quantity 2, unit "L". 500ml → quantity 500, unit "ml".
 - "2 kg rice" → keyword "rice", quantity 2, unit "kg".
 - No markdown, no explanation, only the JSON array.
 
-Product matching policy (for downstream analyzer):
+Cart Optimizer matching policy (enforced when pairing Coles ↔ Woolworths per line item):
 ${PRODUCT_MATCHING_RULES}`;
 
 /** Gọi OpenAI để bóc tách danh sách món */
@@ -5455,6 +5650,7 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
 
     colesItems.forEach((colesItem, idx) => {
       if (usedColesIndexes.has(idx)) return;
+      if (isSameSupermarketCrossPair(woolItem, colesItem)) return;
       const score = scoreProductPair(woolItem, colesItem);
       if (score > bestScore) {
         bestScore = score;
@@ -6805,6 +7001,12 @@ module.exports.__matchingTest__ = {
   nameSuggestsProcessedNotCoreIngredient,
   searchIntentSuggestsRawIngredient,
   nameSuggestsProcessedPreparedFood,
+  nameSuggestsPreservedFoodState,
+  nameSuggestsConveniencePreCut,
+  nameSuggestsBulkWholeProduce,
+  hasFoodStateFormMismatch,
+  hasPackagingFormMismatch,
+  evaluatePairingGuardrails,
   pickBestProductMatch,
   filterProductsForSearchIntent,
   filterSearchNoiseProducts,
