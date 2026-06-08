@@ -4,6 +4,7 @@
  * Debug logs: MATCH_DEBUG=1 node test-produce-match.js
  */
 const path = require('path');
+process.env.NODE_ENV = 'production';
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { __matchingTest__ } = require('./api/index.js');
@@ -17,7 +18,19 @@ const {
   varietiesCompatible,
   hasFoodStateFormMismatch,
   hasPackagingFormMismatch,
+  hasCrossDepartmentFoodNonFoodMismatch,
+  hasBulkVsMicroWeightMismatch,
+  nameSuggestsNonFoodProductTitle,
+  nameBorrowedProduceKeywordForPantry,
+  nameSuggestsShelfStableProducePack,
+  isGenuineFreshProduceForIntent,
+  productConflictsWithWholeProduceRequest,
   evaluatePairingGuardrails,
+  normalizeParsedLineItem,
+  productMatchesParsedLineMongoFilters,
+  filterProductsByParsedLineMongoRules,
+  buildMongoProductQueryFilters,
+  freshProduceRankingScoreOverride,
 } = __matchingTest__;
 
 function assert(cond, msg) {
@@ -170,12 +183,273 @@ const { pairs: colesCrossPairs } = buildSmartComparePairs([colesOnlyA], [colesOn
 assert(colesCrossPairs.length === 0, 'Coles vs Coles must not pair');
 
 // pickBestProductMatch should not return pickled cucumber for fresh intent
-const cucumberListItem = { keyword: 'cucumber', quantity: 1, unit: 'each' };
+const cucumberListItem = {
+  clean_query: 'cucumber',
+  keyword: 'cucumber',
+  is_fresh_produce: true,
+  category: 'Fruit & Veg',
+  quantity: 1,
+  unit: 'each',
+};
 const cucumberPick = pickBestProductMatch(
   [colesPickledCucumber, colesFreshCucumber],
   'cucumber',
   cucumberListItem
 );
 assert(cucumberPick.product && !/pickled|jar/i.test(cucumberPick.product.name), 'pickBest avoids pickled cucumber');
+
+// Fresh cucumber must not pair with soap sharing the keyword
+const colesCucumberSoap = {
+  name: 'Dettol Soap Bar Honeydew & Cucumber 60g',
+  price: 4.2,
+  supermarket: 'Coles',
+  categoryBucket: 'health_beauty',
+  categoryLabels: ['Health & Beauty', 'Soap & Body Wash'],
+};
+assert(nameSuggestsNonFoodProductTitle(colesCucumberSoap.name), 'soap title flagged non-food');
+assert(
+  hasCrossDepartmentFoodNonFoodMismatch(
+    woolCucumber.name,
+    woolCucumber,
+    colesCucumberSoap.name,
+    colesCucumberSoap
+  ),
+  'cucumber vs soap cross-department mismatch'
+);
+assert(scoreSmartMatchPair(woolCucumber, colesCucumberSoap) < 0, 'cucumber vs soap smart pair rejected');
+assert(scoreProductPair(woolCucumber, colesCucumberSoap) === 0, 'cucumber vs soap legacy pair rejected');
+
+const { pairs: soapPairs } = buildSmartComparePairs(
+  [woolCucumber],
+  [colesCucumberSoap, colesFreshCucumber]
+);
+assert(soapPairs.length === 1, 'cucumber should pair despite soap candidate');
+assert(!/soap|dettol/i.test(soapPairs[0].coles.name), 'must not pair cucumber with soap');
+
+// Whole watermelon must not pair with candy roller
+const colesWatermelonRoller = {
+  name: 'Watermelon Roller 20g',
+  price: 1.5,
+  supermarket: 'Coles',
+  categoryBucket: 'confectionery',
+  categoryLabels: ['Confectionery', 'Candy'],
+};
+assert(nameSuggestsNonFoodProductTitle(colesWatermelonRoller.name), 'candy roller flagged non-food');
+assert(
+  hasBulkVsMicroWeightMismatch(
+    woolWatermelon.name,
+    woolWatermelon,
+    colesWatermelonRoller.name,
+    colesWatermelonRoller
+  ),
+  '8kg watermelon vs 20g roller weight mismatch'
+);
+assert(scoreSmartMatchPair(woolWatermelon, colesWatermelonRoller) < 0, 'watermelon vs roller rejected');
+
+const { pairs: rollerPairs } = buildSmartComparePairs(
+  [woolWatermelon],
+  [colesWatermelonRoller, colesWholeWatermelon]
+);
+assert(rollerPairs.length === 1, 'watermelon should pair despite roller candidate');
+assert(!/roller|candy/i.test(rollerPairs[0].coles.name), 'must not pair watermelon with candy roller');
+
+// pickBest must not return soap for cucumber search
+const soapPick = pickBestProductMatch(
+  [colesCucumberSoap, colesFreshCucumber],
+  'cucumber',
+  cucumberListItem
+);
+assert(soapPick.product && !/soap|dettol/i.test(soapPick.product.name), 'pickBest avoids soap');
+
+// Watermelon intent must not match broken rice (brand keyword trap)
+const colesWatermelonRice = {
+  name: 'Watermelon Broken Rice 1kg',
+  price: 3,
+  supermarket: 'Coles',
+  categoryBucket: 'pantry',
+};
+const watermelonListItem = {
+  clean_query: 'watermelon',
+  keyword: 'watermelon',
+  is_fresh_produce: true,
+  category: 'Fruit & Veg',
+  quantity: 2,
+  unit: 'each',
+};
+const cucumberKgListItem = {
+  clean_query: 'cucumber',
+  keyword: 'cucumber',
+  is_fresh_produce: true,
+  category: 'Fruit & Veg',
+  quantity: 2,
+  unit: 'kg',
+};
+
+assert(
+  nameBorrowedProduceKeywordForPantry(colesWatermelonRice.name, 'watermelon', watermelonListItem),
+  'watermelon broken rice pantry trap'
+);
+assert(
+  !isGenuineFreshProduceForIntent(
+    colesWatermelonRice.name,
+    colesWatermelonRice,
+    'watermelon',
+    watermelonListItem
+  ),
+  'broken rice not genuine watermelon'
+);
+const ricePick = pickBestProductMatch(
+  [colesWatermelonRice, colesWholeWatermelon],
+  'watermelon',
+  watermelonListItem
+);
+assert(ricePick.product && /watermelon/i.test(ricePick.product.name), 'should pick real watermelon');
+assert(!/rice/i.test(ricePick.product.name), 'must not pick broken rice for watermelon');
+
+// Pickled jar cucumber must not match 2kg fresh cucumber intent
+const woolPickledCucumber = {
+  name: 'Always Fresh Cucumbers Baby 350g',
+  price: 4.7,
+  supermarket: 'Woolworths',
+  categoryBucket: 'pantry',
+};
+assert(
+  nameSuggestsShelfStableProducePack(woolPickledCucumber.name, woolPickledCucumber),
+  'always fresh baby cucumber jar flagged'
+);
+const pickledPick = pickBestProductMatch(
+  [woolPickledCucumber, colesFreshCucumber],
+  'cucumber',
+  cucumberKgListItem
+);
+assert(
+  pickledPick.product && !/always fresh|baby/i.test(pickledPick.product.name),
+  'pickBest avoids pickled baby cucumber jar'
+);
+
+// Quarter watermelon must not satisfy x2 whole watermelon request
+const woolQuarterMelon = {
+  name: 'Woolworths Red Watermelon Cut Quarter each',
+  price: 8.58,
+  supermarket: 'Woolworths',
+  categoryBucket: 'fruit_veg',
+};
+assert(
+  productConflictsWithWholeProduceRequest(woolQuarterMelon.name, watermelonListItem),
+  'quarter melon conflicts with whole-unit request'
+);
+const melonPick = pickBestProductMatch([woolQuarterMelon], 'watermelon', watermelonListItem);
+assert(melonPick.product == null, 'no match when only quarter melon available for x2 whole');
+
+// 2-step pipeline: parse schema + programmatic Mongo-style filters
+const parsedCucumber = normalizeParsedLineItem({
+  original_text: 'fresh cucumber (2 kg)',
+  clean_query: 'cucumber',
+  is_fresh_produce: true,
+  category: 'Fruit & Veg',
+});
+assert(parsedCucumber.clean_query === 'cucumber', 'clean_query normalized');
+assert(parsedCucumber.is_fresh_produce === true, 'fresh produce flag');
+assert(parsedCucumber.quantity === 2 && parsedCucumber.unit === 'kg', 'qty from original_text');
+
+const arizonaJuice = {
+  name: 'Arizona Cucumber Lemonade Fruit Juice Drink 680mL',
+  categoryBucket: 'drinks',
+  categoryPath: 'Drinks / Juice',
+};
+const dettolSoap = {
+  name: 'Dettol Soap Bar Honeydew & Cucumber 100g',
+  categoryBucket: 'household',
+  categoryPath: 'Health & Beauty / Soap',
+};
+const woolworthsCucumberMask = {
+  name: 'Sheet Mask - Cucumber',
+  categoryBucket: 'health_beauty',
+  categoryPath: 'Health & Beauty / Skincare / Face Masks',
+  categoryLabels: ['Health & Beauty', 'Skincare'],
+};
+assert(
+  !productMatchesParsedLineMongoFilters(arizonaJuice, cucumberListItem),
+  'juice excluded for fresh cucumber'
+);
+assert(
+  !productMatchesParsedLineMongoFilters(dettolSoap, cucumberListItem),
+  'soap excluded for fresh cucumber'
+);
+assert(
+  !productMatchesParsedLineMongoFilters(woolworthsCucumberMask, cucumberListItem),
+  'skincare sheet mask excluded for fresh cucumber'
+);
+assert(
+  !productMatchesParsedLineMongoFilters(colesWatermelonRice, watermelonListItem),
+  'broken rice excluded for fresh watermelon'
+);
+
+const h2MelonWater = {
+  name: 'H2Melon Watermelon Water 500mL',
+  price: 5,
+  supermarket: 'Woolworths',
+  categoryBucket: 'fruit_veg',
+  categoryPath: 'Fruit & Veg',
+};
+assert(
+  !productMatchesParsedLineMongoFilters(h2MelonWater, watermelonListItem),
+  'watermelon water excluded for fresh watermelon'
+);
+assert(
+  pickBestProductMatch([h2MelonWater], 'watermelon', watermelonListItem).product == null,
+  'only watermelon water returns null'
+);
+const watermelonWithDrinkPick = pickBestProductMatch(
+  [h2MelonWater, colesWholeWatermelon],
+  'watermelon',
+  watermelonListItem
+);
+assert(
+  watermelonWithDrinkPick.product &&
+    /watermelon/i.test(watermelonWithDrinkPick.product.name) &&
+    !/water\b|juice|drink|beverage/i.test(watermelonWithDrinkPick.product.name),
+  'real watermelon beats watermelon water'
+);
+assert(
+  freshProduceRankingScoreOverride(colesWholeWatermelon, 'watermelon', watermelonListItem) >=
+    1000,
+  'real watermelon gets massive fresh produce boost'
+);
+assert(
+  freshProduceRankingScoreOverride(h2MelonWater, 'watermelon', watermelonListItem) < 0,
+  'watermelon water gets strict fresh produce penalty'
+);
+
+const freshCucumberMongoFilter = buildMongoProductQueryFilters(cucumberListItem, 'Woolworths');
+assert(
+  freshCucumberMongoFilter.$and.some(
+    (clause) =>
+      clause.department &&
+      Array.isArray(clause.department.$in) &&
+      clause.department.$in.length === 3 &&
+      clause.department.$in.includes('Fruit & Veg') &&
+      clause.department.$in.includes('Produce') &&
+      clause.department.$in.includes('Fresh')
+  ),
+  'fresh produce mongo filter allows only produce departments'
+);
+assert(
+  freshCucumberMongoFilter.$and.some(
+    (clause) => clause.name?.$not && clause.name.$not.test('Sheet Mask - Cucumber')
+  ),
+  'fresh produce mongo filter blocks skincare names'
+);
+
+const filteredCucumber = filterProductsByParsedLineMongoRules(
+  [woolPickledCucumber, colesFreshCucumber, arizonaJuice, woolworthsCucumberMask],
+  cucumberKgListItem
+);
+assert(
+  filteredCucumber.length === 1 &&
+    /cucumber/i.test(filteredCucumber[0].name) &&
+    !/juice|soap|pickled/i.test(filteredCucumber[0].name),
+  'mongo filter keeps only genuine fresh cucumber'
+);
 
 console.log('test-produce-match.js: all assertions passed');

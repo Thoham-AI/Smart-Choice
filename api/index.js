@@ -130,6 +130,21 @@ const openaiClient = process.env.OPENAI_API_KEY
 // ============================================================
 const MONGODB_URI = mongo.getUri();
 const API_CACHE_COLLECTION = 'api_cache';
+/** Normalized search hits — queried by backend matcher (not OpenAI). */
+const PRODUCTS_COLLECTION = 'products';
+const FRESH_PRODUCE_ALLOWED_DEPARTMENTS = [
+  'Fruit & Veg',
+  'Produce',
+  'Fresh',
+];
+const FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE =
+  /health\s*(?:&|and)?\s*beauty|beauty|cosmetics?|baby|household/i;
+const FRESH_PRODUCE_NAME_EXCLUSION_RE =
+  /soap|juice|drink|aloe|arizona|pickled|mix|candy|pack|mask|sheet|cream|lotion|scrub|gel|shampoo|conditioner|skincare|wipes|essential oil/i;
+const FRESH_PRODUCE_REAL_UNIT_SIGNAL_RE =
+  /\b(?:kg|whole|cut|half|quarter|each|pack of|per)\b/i;
+const FRESH_PRODUCE_PROCESSED_DRINK_RE =
+  /\b(?:water|juice|drink|can|soda|sparkling|powder|beverage)\b/i;
 /**
  * Cache tìm kiếm siêu thị (MongoDB native driver, KHÔNG dùng Mongoose model):
  * - Collection: api_cache
@@ -315,6 +330,252 @@ function getApiCacheCollection() {
   const mongoDb = mongo.getDb();
   if (!mongoDb) return null;
   return mongoDb.collection(API_CACHE_COLLECTION);
+}
+
+function getProductsCollection() {
+  const mongoDb = mongo.getDb();
+  if (!mongoDb) return null;
+  return mongoDb.collection(PRODUCTS_COLLECTION);
+}
+
+let productsIndexesReady = false;
+
+async function ensureProductsIndexes() {
+  if (productsIndexesReady) return;
+  const collection = getProductsCollection();
+  if (!collection) return;
+  await collection.createIndex(
+    { supermarket: 1, department: 1, name: 1 },
+    { name: 'products_store_dept_name' }
+  );
+  await collection.createIndex(
+    { supermarket: 1, searchKeyword: 1, updatedAt: -1 },
+    { name: 'products_store_keyword' }
+  );
+  productsIndexesReady = true;
+}
+
+function resolveProductDepartmentLabel(product) {
+  const labels = product?.categoryLabels || [];
+  const path = String(product?.categoryPath || '');
+  const haystack = `${labels.join(' ')} ${path}`.toLowerCase();
+
+  if (/fruit\s*(?:&|and)\s*veg|fruit\s*&\s*vegetables|fresh produce/.test(haystack)) {
+    return 'Fruit & Veg';
+  }
+  if (/\bproduce\b/.test(haystack)) return 'Produce';
+  if (/\bfresh\b/.test(haystack) && /fruit|veg|vegetable/.test(haystack)) return 'Fresh';
+
+  const bucket = normalizeCategoryBucketLabel(product?.categoryBucket);
+  if (bucket === CATEGORY_BUCKETS.FRESH_PRODUCE) return 'Produce';
+
+  return labels[labels.length - 1] || labels[0] || 'Unknown';
+}
+
+function departmentAllowedForFreshProduce(department) {
+  const dept = String(department || '').trim();
+  if (!dept) return false;
+  if (FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE.test(dept)) return false;
+  return FRESH_PRODUCE_ALLOWED_DEPARTMENTS.some(
+    (allowed) => dept.toLowerCase() === allowed.toLowerCase()
+  );
+}
+
+function productHasExcludedFreshProduceDepartment(product, department) {
+  const labels = Array.isArray(product?.categoryLabels)
+    ? product.categoryLabels.join(' ')
+    : '';
+  const haystack = [
+    department,
+    product?.department,
+    product?.categoryPath,
+    labels,
+    product?.categoryBucket,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE.test(haystack);
+}
+
+function freshProduceProductText(product, name = '') {
+  return [
+    name || product?.name,
+    product?.size,
+    product?.unit,
+    product?.unit_price_text,
+    product?.unit_price,
+    product?.unitPrice,
+    product?.cupString,
+    product?.CupString,
+    product?.package_size,
+    product?.pack_size,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function bareFreshProduceSearchIntent(keyword, listItem = {}) {
+  if (!isProduceSearchIntent(keyword, listItem)) return false;
+  const query = normalizeNameForMatch(
+    stripWeightFromText(listItem?.clean_query || keyword || listItem?.keyword || '')
+  );
+  if (!query || FRESH_PRODUCE_PROCESSED_DRINK_RE.test(query)) return false;
+  return PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(query, kw));
+}
+
+function freshProduceCandidateHasProcessedDrinkTerms(product, keyword, listItem = {}) {
+  if (!bareFreshProduceSearchIntent(keyword, listItem)) return false;
+  return FRESH_PRODUCE_PROCESSED_DRINK_RE.test(
+    freshProduceProductText(product, product?.name || '')
+  );
+}
+
+function freshProduceCandidateHasRealUnitSignal(product) {
+  const text = freshProduceProductText(product, product?.name || '');
+  if (FRESH_PRODUCE_PROCESSED_DRINK_RE.test(text)) return false;
+  return (
+    FRESH_PRODUCE_REAL_UNIT_SIGNAL_RE.test(text) ||
+    product?.pricePerKg != null ||
+    product?.isPerKgPricing === true
+  );
+}
+
+function freshProduceRankingScoreOverride(product, keyword, listItem = {}) {
+  if (listItem?.is_fresh_produce !== true) return 0;
+  if (freshProduceCandidateHasProcessedDrinkTerms(product, keyword, listItem)) {
+    return -0.9;
+  }
+  return freshProduceCandidateHasRealUnitSignal(product) ? 1000 : 0;
+}
+
+/** Programmatic Mongo-style filter — OpenAI never picks products. */
+function productMatchesParsedLineMongoFilters(product, listItem) {
+  const name = String(product?.name || '');
+  const cleanQuery = String(listItem?.clean_query || listItem?.keyword || '').trim();
+  if (!name || !cleanQuery) return false;
+
+  const queryWords = normalizeNameForMatch(cleanQuery)
+    .split(' ')
+    .filter((w) => w.length > 2);
+  const nameNorm = normalizeNameForMatch(name);
+  const nameHit =
+    queryWords.length > 0
+      ? queryWords.some((w) => haystackHasWord(nameNorm, w))
+      : nameNorm.includes(normalizeNameForMatch(cleanQuery));
+
+  if (!nameHit) return false;
+
+  if (!listItem?.is_fresh_produce) return true;
+
+  if (FRESH_PRODUCE_NAME_EXCLUSION_RE.test(name)) return false;
+  if (freshProduceCandidateHasProcessedDrinkTerms(product, cleanQuery, listItem)) return false;
+
+  const department = resolveProductDepartmentLabel(product);
+  if (
+    productHasExcludedFreshProduceDepartment(product, department) ||
+    !departmentAllowedForFreshProduce(department)
+  ) {
+    return false;
+  }
+
+  return isGenuineFreshProduceForIntent(name, product, cleanQuery, listItem);
+}
+
+function filterProductsByParsedLineMongoRules(products, listItem) {
+  if (!Array.isArray(products) || !products.length) return [];
+  return products.filter((p) => productMatchesParsedLineMongoFilters(p, listItem));
+}
+
+function buildMongoProductQueryFilters(listItem, supermarket) {
+  const cleanQuery = String(listItem?.clean_query || listItem?.keyword || '').trim();
+  const filter = { supermarket: String(supermarket) };
+
+  if (!cleanQuery) return filter;
+
+  const queryPattern = cleanQuery
+    .split(/\s+/)
+    .filter((w) => w.length > 2)
+    .map((w) => escapeRegex(w))
+    .join('|');
+  const nameInclude = queryPattern || escapeRegex(cleanQuery);
+
+  if (listItem?.is_fresh_produce) {
+    filter.$and = [
+      { name: { $regex: nameInclude, $options: 'i' } },
+      { name: { $not: FRESH_PRODUCE_NAME_EXCLUSION_RE } },
+      { name: { $not: FRESH_PRODUCE_PROCESSED_DRINK_RE } },
+      { department: { $in: FRESH_PRODUCE_ALLOWED_DEPARTMENTS } },
+      { department: { $not: FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE } },
+      { categoryPath: { $not: FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE } },
+    ];
+  } else {
+    filter.name = { $regex: nameInclude, $options: 'i' };
+  }
+
+  return filter;
+}
+
+async function syncProductsToMongo(supermarket, searchKeyword, products) {
+  const collection = getProductsCollection();
+  if (!collection || !Array.isArray(products) || !products.length) return;
+
+  await ensureProductsIndexes();
+
+  const keyword = String(searchKeyword || '').trim();
+  const now = new Date();
+  const ops = [];
+
+  for (const product of products) {
+    if (!product?.name) continue;
+    const productId = product.productId || normalizeNameForMatch(product.name);
+    const department = resolveProductDepartmentLabel(product);
+    ops.push({
+      updateOne: {
+        filter: { _id: `${supermarket}:${productId}` },
+        update: {
+          $set: {
+            supermarket,
+            searchKeyword: keyword,
+            name: product.name,
+            department,
+            categoryPath: product.categoryPath || '',
+            categoryBucket: product.categoryBucket || CATEGORY_BUCKETS.UNKNOWN,
+            price: product.price ?? product.packShelfPrice ?? null,
+            payload: product,
+            updatedAt: now,
+          },
+        },
+        upsert: true,
+      },
+    });
+  }
+
+  if (!ops.length) return;
+  try {
+    await collection.bulkWrite(ops, { ordered: false });
+  } catch (err) {
+    console.warn(`  ⚠ products sync failed (${supermarket} "${keyword}"):`, err.message);
+  }
+}
+
+async function findBestProductInMongo(supermarket, listItem) {
+  const collection = getProductsCollection();
+  if (!collection) return null;
+
+  await ensureProductsIndexes();
+
+  const filter = buildMongoProductQueryFilters(listItem, supermarket);
+  const docs = await collection
+    .find(filter, { sort: { price: 1 }, limit: RESULT_LIMIT })
+    .toArray();
+  const products = docs.map((doc) => doc?.payload).filter(Boolean);
+  const eligible = filterProductsByParsedLineMongoRules(products, listItem);
+  if (!eligible.length) return null;
+
+  const keyword = listItem.clean_query || listItem.keyword;
+  const { product } = pickBestProductMatch(eligible, keyword, listItem);
+  return product || null;
 }
 
 function getPriceHistoryCollection() {
@@ -2523,10 +2784,20 @@ const PRODUCT_MATCHING_RULES = `You are a strict grocery price analyzer for Aust
    - Never convert weights/volumes of liquids, pickles, jams, sauces, or processed jarred goods to match fresh raw produce weights.
    - Never apply per-kg scaling across mismatched forms (pickled ≠ fresh, tray ≠ whole, drained weight ≠ fresh weight).
 
-4. STRICT JSON OUTPUT — NO FORCED BAD MATCHES:
+4. INTENT VS BRAND MATCH (Không nhầm tên thương hiệu với nguyên liệu):
+   - NEVER match a fruit/vegetable intent to a dry packaged product that only shares the produce name in its brand title.
+   - FORBIDDEN: "watermelon" (fresh fruit) ↔ "Watermelon Broken Rice" (gạo tấm / pantry rice).
+   - FORBIDDEN: "cucumber" (fresh vegetable) ↔ "Always Fresh Cucumbers Baby 350g" (pickled jar) or "Cucumber Soap".
+   - Brand words like "Fresh", "Natural", or "Always Fresh" do NOT prove the item is fresh produce.
+
+5. CONTEXT CHECKING — SAME NATURE ONLY:
+   - "Fresh cucumber" means the raw vegetable — not pickled cucumber (dưa muối), not cucumber soap (xà bông).
+   - Verify the CORE nature of the item (fresh produce vs pantry vs health/beauty) before any match or price math.
+
+6. STRICT JSON OUTPUT — NO FORCED BAD MATCHES / NO HALLUCINATIONS:
    - When resolving each list item across stores, return a JSON object per line with "coles" and "woolworths" fields.
-   - If a high-confidence match with the EXACT same form and food state is not found in a store, set that store field to null — never substitute a keyword-similar but semantically different product.
-   - A match is high-confidence only when: same ingredient, same fresh/processed state, same pack type (whole vs pre-cut vs jar), and comparable unit size.
+   - If a store lacks a product of the EXACT SAME type/nature, set that store field to null — never pick a random keyword collision.
+   - Do not hallucinate matches just because one word overlaps (watermelon ≠ rice, cucumber ≠ soap).
    - Prefer null over a misleading forced pair; downstream logic may impute rival prices rather than show $0.
 
 Always prioritize the lowest $/kg only among products that pass ALL rules above.`;
@@ -2616,6 +2887,109 @@ const BULK_WHOLE_PRODUCE_HINTS = ['whole', 'loose', 'seedless'];
 /** Tỷ lệ khối lượng tối thiểu khi ghép trái/rau tươi (600 g vs 8 kg → loại). */
 const FRESH_PRODUCE_MIN_WEIGHT_RATIO = 0.35;
 
+/** Gói siêu nhỏ (kẹo roller, xà phòng) — không ghép nguyên khối ≥2 kg. */
+const MICRO_PACK_MAX_GRAMS = 100;
+
+/** Tín hiệu ý định trái/rau tươi trong tên hoặc query. */
+const FRESH_PRODUCE_SIGNAL_KEYWORDS = [
+  'fresh',
+  'cucumber',
+  'watermelon',
+  'vegetable',
+  'fruit',
+];
+
+/** Từ khóa cấm khi ghép với trái/rau tươi (xà phòng, kẹo, v.v.). */
+const NON_FOOD_PRODUCT_BLACKLIST_KEYWORDS = [
+  'soap',
+  'dettol',
+  'shampoo',
+  'body wash',
+  'toiletries',
+  'roller',
+  'candy',
+  'sweets',
+  'jelly',
+  'gummy',
+  'pickled',
+  'jar',
+  'bar',
+  'lollies',
+  'lolly',
+  'chocolate',
+  'confectionery',
+  'hygiene',
+  'cleanser',
+  'moisturiser',
+  'moisturizer',
+];
+
+/** Pantry / dry goods — tên mượn từ khóa trái/rau (vd: Watermelon Broken Rice). */
+const PANTRY_STAPLE_KEYWORDS = [
+  'rice',
+  'broken rice',
+  'grain',
+  'grains',
+  'flour',
+  'noodle',
+  'noodles',
+  'pasta',
+  'cereal',
+  'oats',
+  'semolina',
+  'couscous',
+  'cracker',
+  'crackers',
+  'biscuit',
+  'biscuits',
+  'bread mix',
+  'cake mix',
+  'muesli',
+  'granola',
+  'sauce',
+  'paste',
+  'powder',
+  'stock',
+  'seasoning',
+  'chips',
+  'crisps',
+  'tea',
+  'coffee',
+];
+
+/** Gói gram nhỏ vẫn có thể là tươi (cà chua, nho…) — không loại nhầm. */
+const SHELF_STABLE_PACK_EXCEPTIONS = [
+  'tomato',
+  'tomatoes',
+  'berry',
+  'berries',
+  'grape',
+  'grapes',
+  'herb',
+  'herbs',
+  'mint',
+  'parsley',
+  'basil',
+  'coriander',
+];
+
+/** Nhãn department API — Health & Beauty, Household, Confectionery… */
+const NON_FOOD_DEPARTMENT_TERMS = [
+  'health',
+  'beauty',
+  'personal care',
+  'toiletries',
+  'hygiene',
+  'household',
+  'home care',
+  'cleaning',
+  'laundry',
+  'confectionery',
+  'candy',
+  'snack food',
+  'soap',
+];
+
 function nameSuggestsPreservedFoodState(displayName) {
   const nameNorm = normalizeNameForMatch(displayName);
   if (!nameNorm) return false;
@@ -2702,9 +3076,24 @@ function isSameSupermarketCrossPair(productA, productB) {
 }
 
 /** Guardrails chung — dùng ở scoreProductPair, scoreSmartMatchPair, buildSmartComparePairs. */
-function evaluatePairingGuardrails(nameA, productA, nameB, productB) {
+function evaluatePairingGuardrails(nameA, productA, nameB, productB, opts = {}) {
   if (isSameSupermarketCrossPair(productA, productB)) {
     return 'same supermarket cross-pair';
+  }
+  if (hasCrossDepartmentFoodNonFoodMismatch(nameA, productA, nameB, productB)) {
+    return 'cross-department ban (fresh produce vs non-food department)';
+  }
+  if (
+    hasFreshProduceNonFoodKeywordConflict(
+      nameA,
+      productA,
+      nameB,
+      productB,
+      opts.keyword,
+      opts.listItem
+    )
+  ) {
+    return 'fresh produce keyword vs non-food product blacklist';
   }
   if (hasFoodStateFormMismatch(nameA, nameB)) {
     return 'food state/form mismatch (fresh vs preserved/processed)';
@@ -2712,13 +3101,107 @@ function evaluatePairingGuardrails(nameA, productA, nameB, productB) {
   if (hasPackagingFormMismatch(nameA, productA, nameB, productB)) {
     return 'packaging/weight mismatch (bulk whole vs convenience pre-cut)';
   }
+  if (hasBulkVsMicroWeightMismatch(nameA, productA, nameB, productB)) {
+    return 'bulk produce vs micro-pack weight mismatch (<100g)';
+  }
   return null;
+}
+
+function produceKeywordAppearsInName(name, keyword, listItem = {}) {
+  const core = stripWeightFromText(keyword || listItem.keyword || '');
+  return productNameMatchesProduceKeyword(name, core);
+}
+
+/** Trái/rau trong tên nhưng sản phẩm thực chất là pantry (Watermelon Broken Rice). */
+function nameBorrowedProduceKeywordForPantry(name, keyword, listItem = {}) {
+  if (!isProduceSearchIntent(keyword, listItem)) return false;
+  if (!produceKeywordAppearsInName(name, keyword, listItem)) return false;
+  const nameNorm = normalizeNameForMatch(name);
+  return PANTRY_STAPLE_KEYWORDS.some((kw) =>
+    kw.includes(' ') ? nameNorm.includes(kw) : haystackHasWord(nameNorm, kw)
+  );
+}
+
+/** Hộp/jar/gherkin/baby pack — không phải dưa chuột tươi bán each. */
+function nameSuggestsShelfStableProducePack(name, product = null) {
+  const nameNorm = normalizeNameForMatch(name);
+  if (!nameNorm) return false;
+  if (nameSuggestsPreservedFoodState(name)) return true;
+  if (/\b(in brine|in vinegar|cornichon|gherkin|muoi|pickled)\b/.test(nameNorm)) return true;
+  if (/\balways fresh\b/.test(nameNorm) && /\b(cucumber|onion|beetroot|olive)\b/.test(nameNorm)) {
+    return true;
+  }
+
+  const grams = getProductWeightGrams(name, product);
+  const hasEach = /\beach\b/.test(nameNorm);
+  const hasLoose = /\b(loose|per kg|per kilo|whole)\b/.test(nameNorm);
+  if (hasEach || hasLoose) return false;
+
+  if (grams != null && grams > 0 && grams <= 1000) {
+    if (SHELF_STABLE_PACK_EXCEPTIONS.some((ex) => haystackHasWord(nameNorm, ex))) return false;
+    if (/\b(baby|mini|gherkin|cornichon)\b/.test(nameNorm)) return true;
+    if (/\b(cucumber|onion|beetroot|olive|capsicum|chilli)\b/.test(nameNorm)) return true;
+  }
+
+  return false;
+}
+
+function listItemWantsWholeProduceUnits(listItem = {}) {
+  const unit = String(listItem?.unit || '').toLowerCase();
+  const qty = Number(listItem?.quantity) > 0 ? Number(listItem.quantity) : 1;
+  return ['each', 'ea'].includes(unit) && qty >= 1;
+}
+
+/** Khách muốn 2 quả nguyên — không ghép quarter/half/cut. */
+function productConflictsWithWholeProduceRequest(name, listItem = {}) {
+  if (!listItemWantsWholeProduceUnits(listItem)) return false;
+  if (!isProduceSearchIntent(listItem.keyword, listItem)) return false;
+  const frac = detectFractionalUnit(name);
+  if (frac.penalizeMatch) return true;
+  if (nameSuggestsConveniencePreCut(name)) return true;
+  const nameNorm = normalizeNameForMatch(name);
+  if (/\b(quarter|half)\b/.test(nameNorm) && /\b(watermelon|melon|pineapple|pumpkin)\b/.test(nameNorm)) {
+    return true;
+  }
+  if (/\b(wedge|fingers)\b/.test(nameNorm) && /\b(watermelon|melon)\b/.test(nameNorm)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Trái/rau tươi thật cho ý định produce — không rice/soap/jar mượn từ khóa.
+ */
+function isGenuineFreshProduceForIntent(name, product, keyword, listItem = {}) {
+  if (!isProduceSearchIntent(keyword, listItem)) return true;
+  if (searchIntentSuggestsProcessedFood(keyword, listItem)) return true;
+  if (!isFreshProduceCandidateForIntent(name, product, keyword, listItem)) return false;
+  if (nameBorrowedProduceKeywordForPantry(name, keyword, listItem)) return false;
+  if (nameSuggestsShelfStableProducePack(name, product)) return false;
+  if (productConflictsWithWholeProduceRequest(name, listItem)) return false;
+
+  const bucket = normalizeCategoryBucketLabel(
+    product?.categoryBucket || resolveProductBucket(product || { name })
+  );
+  if (bucket === CATEGORY_BUCKETS.PANTRY) return false;
+
+  const nameNorm = normalizeNameForMatch(name);
+  return (
+    bucket === CATEGORY_BUCKETS.FRESH_PRODUCE ||
+    looksLikeLooseFreshProduceName(name) ||
+    /\b(each|loose|per kg|whole|fresh)\b/.test(nameNorm)
+  );
 }
 
 function isFreshProduceCandidateForIntent(name, product, keyword, listItem = {}) {
   if (!isProduceSearchIntent(keyword, listItem)) return true;
   if (searchIntentSuggestsProcessedFood(keyword, listItem)) return true;
+  if (nameSuggestsNonFoodProductTitle(name)) return false;
+  if (productInNonFoodDepartment(product, name)) return false;
   if (nameSuggestsPreservedFoodState(name)) return false;
+  if (nameBorrowedProduceKeywordForPantry(name, keyword, listItem)) return false;
+  if (nameSuggestsShelfStableProducePack(name, product)) return false;
+  if (productConflictsWithWholeProduceRequest(name, listItem)) return false;
   if (
     !searchIntentSuggestsConveniencePack(keyword, listItem) &&
     nameSuggestsConveniencePreCut(name, product)
@@ -2726,6 +3209,169 @@ function isFreshProduceCandidateForIntent(name, product, keyword, listItem = {})
     return false;
   }
   return true;
+}
+
+function normalizeCategoryBucketLabel(bucket) {
+  const raw = String(bucket || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (Object.values(CATEGORY_BUCKETS).includes(raw)) return raw;
+  return CATEGORY_BUCKET_ALIASES[raw] || raw;
+}
+
+function haystackSuggestsNonFoodDepartment(haystack) {
+  const lower = String(haystack || '').toLowerCase();
+  return NON_FOOD_DEPARTMENT_TERMS.some((term) => lower.includes(term));
+}
+
+/** Kẹo/xà phòng/kẹo roller — tên mượn từ khóa trái/rau (vd: Honeydew & Cucumber soap). */
+function nameSuggestsNonFoodProductTitle(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  if (!nameNorm) return false;
+  if (/\bchilli\s+350\s*g\b/.test(nameNorm) || /\bchili\s+350\s*g\b/.test(nameNorm)) {
+    return true;
+  }
+  if (
+    NON_FOOD_PRODUCT_BLACKLIST_KEYWORDS.some((kw) =>
+      kw.includes(' ') ? nameNorm.includes(kw) : haystackHasWord(nameNorm, kw)
+    )
+  ) {
+    return true;
+  }
+  return nameSuggestsNonFreshProduceSnack(displayName);
+}
+
+function nameHasFreshProduceSignal(name) {
+  const norm = normalizeNameForMatch(name);
+  if (!norm) return false;
+  if (FRESH_PRODUCE_SIGNAL_KEYWORDS.some((kw) => haystackHasWord(norm, kw))) return true;
+  return PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(norm, kw));
+}
+
+function searchIntentHasFreshProduceSignal(keyword, listItem = {}) {
+  const combined = `${keyword || ''} ${listItem.keyword || ''}`.trim();
+  return nameHasFreshProduceSignal(stripWeightFromText(combined));
+}
+
+function productInNonFoodDepartment(product, name) {
+  const labels = product?.categoryLabels || [];
+  const haystack = buildCategoryHaystack(labels, name);
+  if (haystackSuggestsNonFoodDepartment(haystack)) return true;
+  const bucket = normalizeCategoryBucketLabel(
+    product?.categoryBucket || resolveProductBucket(product || { name })
+  );
+  return (
+    bucket === CATEGORY_BUCKETS.HEALTH_BEAUTY ||
+    bucket === CATEGORY_BUCKETS.HOUSEHOLD ||
+    bucket === CATEGORY_BUCKETS.CONFECTIONERY
+  );
+}
+
+function nameLooksLikePantryProduceBrandTrap(displayName) {
+  const nameNorm = normalizeNameForMatch(displayName);
+  const hasProduce = PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(nameNorm, kw));
+  if (!hasProduce) return false;
+  return PANTRY_STAPLE_KEYWORDS.some((kw) =>
+    kw.includes(' ') ? nameNorm.includes(kw) : haystackHasWord(nameNorm, kw)
+  );
+}
+
+function productInFreshProduceContext(name, product) {
+  if (nameSuggestsNonFoodProductTitle(name) || productInNonFoodDepartment(product, name)) {
+    return false;
+  }
+  if (nameLooksLikePantryProduceBrandTrap(name) || nameSuggestsShelfStableProducePack(name, product)) {
+    return false;
+  }
+  const bucket = normalizeCategoryBucketLabel(
+    product?.categoryBucket || resolveProductBucket(product || { name })
+  );
+  if (bucket === CATEGORY_BUCKETS.PANTRY) return false;
+  if (bucket === CATEGORY_BUCKETS.FRESH_PRODUCE) return true;
+  if (looksLikeLooseFreshProduceName(name)) return true;
+  return nameHasFreshProduceSignal(name);
+}
+
+/** Một bên trái/rau tươi — bên kia xà phòng/kẹo/nhãn department phi thực phẩm. */
+function hasCrossDepartmentFoodNonFoodMismatch(nameA, productA, nameB, productB) {
+  const freshA = productInFreshProduceContext(nameA, productA);
+  const freshB = productInFreshProduceContext(nameB, productB);
+  const nonFoodA =
+    nameSuggestsNonFoodProductTitle(nameA) || productInNonFoodDepartment(productA, nameA);
+  const nonFoodB =
+    nameSuggestsNonFoodProductTitle(nameB) || productInNonFoodDepartment(productB, nameB);
+
+  if (freshA && nonFoodB) return true;
+  if (freshB && nonFoodA) return true;
+
+  const bucketA = normalizeCategoryBucketLabel(
+    productA?.categoryBucket || resolveProductBucket(productA || { name: nameA })
+  );
+  const bucketB = normalizeCategoryBucketLabel(
+    productB?.categoryBucket || resolveProductBucket(productB || { name: nameB })
+  );
+
+  if (freshA && bucketB && FRESH_PRODUCE_INCOMPATIBLE_BUCKETS.has(bucketB)) return true;
+  if (freshB && bucketA && FRESH_PRODUCE_INCOMPATIBLE_BUCKETS.has(bucketA)) return true;
+
+  if (
+    bucketA === CATEGORY_BUCKETS.FRESH_PRODUCE &&
+    bucketB === CATEGORY_BUCKETS.PANTRY &&
+    nonFoodB
+  ) {
+    return true;
+  }
+  if (
+    bucketB === CATEGORY_BUCKETS.FRESH_PRODUCE &&
+    bucketA === CATEGORY_BUCKETS.PANTRY &&
+    nonFoodA
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/** Ý định/query hoặc tên tươi ↔ tên blacklist phi thực phẩm. */
+function hasFreshProduceNonFoodKeywordConflict(
+  nameA,
+  productA,
+  nameB,
+  productB,
+  keyword = '',
+  listItem = {}
+) {
+  const freshContextA =
+    productInFreshProduceContext(nameA, productA) || nameHasFreshProduceSignal(nameA);
+  const freshContextB =
+    productInFreshProduceContext(nameB, productB) || nameHasFreshProduceSignal(nameB);
+  const intentFresh = searchIntentHasFreshProduceSignal(keyword, listItem);
+  const nonFoodA =
+    nameSuggestsNonFoodProductTitle(nameA) || productInNonFoodDepartment(productA, nameA);
+  const nonFoodB =
+    nameSuggestsNonFoodProductTitle(nameB) || productInNonFoodDepartment(productB, nameB);
+
+  if ((freshContextA || intentFresh) && nonFoodB) return true;
+  if ((freshContextB || intentFresh) && nonFoodA) return true;
+  return false;
+}
+
+/** Nguyên khối / ≥2 kg ↔ gói <100 g (kẹo roller, xà phòng). */
+function hasBulkVsMicroWeightMismatch(nameA, productA, nameB, productB) {
+  const gramsA = getProductWeightGrams(nameA, productA);
+  const gramsB = getProductWeightGrams(nameB, productB);
+  const bulkA = nameSuggestsBulkWholeProduce(nameA, productA);
+  const bulkB = nameSuggestsBulkWholeProduce(nameB, productB);
+
+  if (bulkA && gramsB != null && gramsB < MICRO_PACK_MAX_GRAMS) return true;
+  if (bulkB && gramsA != null && gramsA < MICRO_PACK_MAX_GRAMS) return true;
+
+  if (gramsA != null && gramsB != null) {
+    const maxG = Math.max(gramsA, gramsB);
+    const minG = Math.min(gramsA, gramsB);
+    if (maxG >= 2000 && minG < MICRO_PACK_MAX_GRAMS) return true;
+  }
+
+  return false;
 }
 
 /** $/kg để sort — ưu tiên pricePerKg, suy ra từ gói, cuối cùng pack price. */
@@ -2766,8 +3412,14 @@ function productNameContainsSearchKeywords(displayName, keyword, listItem = {}) 
 function scoreProductForMatching(product, keyword, listItem = {}) {
   const hint = buildQuantityHint(listItem);
   let score = scoreProductForKeyword(product.name, keyword, hint, listItem, product);
+  const freshProduceOverride = freshProduceRankingScoreOverride(product, keyword, listItem);
+  if (freshProduceOverride >= 1000) {
+    score += freshProduceOverride;
+  } else if (freshProduceOverride < 0) {
+    score *= 0.1;
+  }
   if (resolveProductBucket(product) === CATEGORY_BUCKETS.FRESH_PRODUCE) {
-    score = Math.min(score + 0.06, 1);
+    score = score >= 1000 ? score + 0.06 : Math.min(score + 0.06, 1);
   }
   return score;
 }
@@ -2777,6 +3429,17 @@ function scoreProductForMatching(product, keyword, listItem = {}) {
  */
 function pickBestFromPricePerKgPool(scoredEntries, keyword, listItem = {}) {
   if (!scoredEntries.length) return { product: null, score: 0 };
+
+  const boostedFreshProduce = scoredEntries
+    .filter((entry) => entry.score >= 1000)
+    .slice()
+    .sort((a, b) => b.score - a.score);
+  if (boostedFreshProduce.length) {
+    return {
+      product: boostedFreshProduce[0].product,
+      score: boostedFreshProduce[0].score,
+    };
+  }
 
   const priced = scoredEntries
     .filter((entry) => entry.score > 0)
@@ -3033,12 +3696,25 @@ function wantsWholeUnitEach(listItem) {
  * - Weight: Final_Displayed_Price = Price_Per_KG × Target_Weight
  * - Each + fractional: giá_khay × multiplier (half ×2, quarter ×4)
  */
+function shouldApplyWeightScaling(product, listItem) {
+  const keyword = listItem?.keyword || '';
+  if (getTargetWeightKg(listItem) == null) return true;
+  if (nameSuggestsPreservedFoodState(product?.name || '')) return false;
+  if (nameBorrowedProduceKeywordForPantry(product?.name || '', keyword, listItem)) return false;
+  if (nameSuggestsShelfStableProducePack(product?.name || '', product)) return false;
+  if (isProduceSearchIntent(keyword, listItem)) {
+    return isGenuineFreshProduceForIntent(product?.name || '', product, keyword, listItem);
+  }
+  return true;
+}
+
 function applyListItemPricing(product, listItem) {
   if (!product || !listItem) return product;
 
   const unit = String(listItem.unit || 'each').toLowerCase();
   const qty = Number(listItem.quantity) > 0 ? Number(listItem.quantity) : 1;
   const targetWeightKg = getTargetWeightKg(listItem);
+  const keyword = listItem.keyword || '';
 
   const packShelfPrice =
     product.packShelfPrice != null ? product.packShelfPrice : product.price;
@@ -3053,7 +3729,7 @@ function applyListItemPricing(product, listItem) {
   let pricingNote = null;
   let isAdjustedPrice = false;
 
-  if (pricePerKg != null && targetWeightKg != null) {
+  if (pricePerKg != null && targetWeightKg != null && shouldApplyWeightScaling(product, listItem)) {
     finalPrice = Number((pricePerKg * targetWeightKg).toFixed(2));
     isAdjustedPrice = true;
 
@@ -3064,7 +3740,11 @@ function applyListItemPricing(product, listItem) {
   } else if (['each', 'ea', 'bunch', 'pack', 'pk'].includes(unit)) {
     const frac = detectFractionalUnit(product.name);
 
-    if (frac.isFractional && frac.multiplier > 1) {
+    if (
+      frac.isFractional &&
+      frac.multiplier > 1 &&
+      !productConflictsWithWholeProduceRequest(product.name, listItem)
+    ) {
       finalPrice = Number((packShelfPrice * frac.multiplier * qty).toFixed(2));
       isAdjustedPrice = true;
       pricingNote = `($${packShelfPrice.toFixed(2)} per ${frac.type}, ×${frac.multiplier} → est. 1 whole unit)`;
@@ -3107,7 +3787,9 @@ function applyWeightContextToProduct(product, listItem) {
  */
 async function fetchStoreProducts(supermarket, searchText, listItem = null, opts = {}) {
   const fast = opts.fast === true;
-  const coreKeyword = stripWeightFromText(listItem?.keyword || searchText);
+  const coreKeyword = stripWeightFromText(
+    listItem?.clean_query || listItem?.keyword || searchText
+  );
   const weightListItem =
     listItem || buildListItemFromSearchText(searchText, coreKeyword);
   const matchListItem = listItem || weightListItem;
@@ -3129,14 +3811,16 @@ async function fetchStoreProducts(supermarket, searchText, listItem = null, opts
 
   let items = [];
   let usedFallback = false;
-  const produceIntent = isProduceSearchIntent(coreKeyword, matchListItem);
+  const produceIntent =
+    matchListItem?.is_fresh_produce === true ||
+    isProduceSearchIntent(coreKeyword, matchListItem);
   const maxQueries = fast && !produceIntent ? 1 : queries.length;
 
   const hasAcceptableMatch = () => {
     if (!items.length) return false;
-    // Không phải trái/rau → chỉ cần API trả về sản phẩm
     if (!produceIntent) return true;
-    const { product } = pickBestProductMatch(items, coreKeyword, matchListItem);
+    const filtered = filterProductsByParsedLineMongoRules(items, matchListItem);
+    const { product } = pickBestProductMatch(filtered, coreKeyword, matchListItem);
     return Boolean(product);
   };
 
@@ -3320,13 +4004,45 @@ const CATEGORY_BUCKETS = {
   BAKERY: 'bakery',
   PANTRY: 'pantry',
   FROZEN: 'frozen',
+  HEALTH_BEAUTY: 'health_beauty',
+  HOUSEHOLD: 'household',
+  CONFECTIONERY: 'confectionery',
   UNKNOWN: 'unknown',
 };
+
+/** API / siêu thị trả nhãn khác tên bucket nội bộ. */
+const CATEGORY_BUCKET_ALIASES = {
+  fruit_veg: CATEGORY_BUCKETS.FRESH_PRODUCE,
+  'fruit & veg': CATEGORY_BUCKETS.FRESH_PRODUCE,
+  'fresh vegetables': CATEGORY_BUCKETS.FRESH_PRODUCE,
+  'fresh fruits': CATEGORY_BUCKETS.FRESH_PRODUCE,
+  'fresh produce': CATEGORY_BUCKETS.FRESH_PRODUCE,
+  produce: CATEGORY_BUCKETS.FRESH_PRODUCE,
+  'health & beauty': CATEGORY_BUCKETS.HEALTH_BEAUTY,
+  'health and beauty': CATEGORY_BUCKETS.HEALTH_BEAUTY,
+  'personal care': CATEGORY_BUCKETS.HEALTH_BEAUTY,
+  toiletries: CATEGORY_BUCKETS.HEALTH_BEAUTY,
+  household: CATEGORY_BUCKETS.HOUSEHOLD,
+  'home care': CATEGORY_BUCKETS.HOUSEHOLD,
+  confectionery: CATEGORY_BUCKETS.CONFECTIONERY,
+  candy: CATEGORY_BUCKETS.CONFECTIONERY,
+};
+
+/** Bucket không được ghép với trái/rau tươi. */
+const FRESH_PRODUCE_INCOMPATIBLE_BUCKETS = new Set([
+  CATEGORY_BUCKETS.DRINKS,
+  CATEGORY_BUCKETS.HEALTH_BEAUTY,
+  CATEGORY_BUCKETS.HOUSEHOLD,
+  CATEGORY_BUCKETS.CONFECTIONERY,
+]);
 
 /** Các cặp bucket không được ghép (điểm = 0 ngay lập tức). */
 const CATEGORY_INCOMPATIBLE_PAIRS = [
   [CATEGORY_BUCKETS.DRINKS, CATEGORY_BUCKETS.FRESH_PRODUCE],
   [CATEGORY_BUCKETS.DRINKS, CATEGORY_BUCKETS.MEAT_SEAFOOD],
+  [CATEGORY_BUCKETS.FRESH_PRODUCE, CATEGORY_BUCKETS.HEALTH_BEAUTY],
+  [CATEGORY_BUCKETS.FRESH_PRODUCE, CATEGORY_BUCKETS.HOUSEHOLD],
+  [CATEGORY_BUCKETS.FRESH_PRODUCE, CATEGORY_BUCKETS.CONFECTIONERY],
 ];
 
 /** Từ khóa tìm kiếm thường là trái cây/rau tươi (vd: watermelon) – không fallback sang nước ép. */
@@ -3654,7 +4370,7 @@ function nameSuggestsProcessedNotCoreIngredient(displayName, keyword) {
 /** Kẹo/snack/rượu – tên có "watermelon" nhưng không phải quả tươi. */
 function nameSuggestsNonFreshProduceSnack(displayName) {
   const nameNorm = normalizeNameForMatch(displayName);
-  return /\b(sour|lollies|lolly|candy|chocolate|chips|crisps|snack|muesli|gin|vodka|beer|wine|liqueur|cordial concentrate)\b/.test(
+  return /\b(sour|lollies|lolly|candy|chocolate|chips|crisps|snack|muesli|gin|vodka|beer|wine|liqueur|cordial concentrate|roller|dettol|soap|shampoo)\b/.test(
     nameNorm
   );
 }
@@ -3662,13 +4378,16 @@ function nameSuggestsNonFreshProduceSnack(displayName) {
 /** Từ khóa đồ uống trong tên (không gọi looksLikeLooseFreshProduceName – tránh đệ quy). */
 function hasPackagedDrinkKeywords(displayName) {
   const nameNorm = normalizeNameForMatch(displayName);
-  return /\b(juice|cordial|soft drink|soda|cola|lemonade|beverage|h2juice|drink)\b/.test(
+  return /\b(water|juice|cordial|soft drink|soda|cola|lemonade|beverage|h2juice|drink|can|sparkling|powder)\b/.test(
     nameNorm
   );
 }
 
 /** Tên gợi ý trái cây/rau bán tươi (không phải chai nước ép). */
 function looksLikeLooseFreshProduceName(displayName) {
+  if (nameSuggestsNonFoodProductTitle(displayName)) return false;
+  if (nameLooksLikePantryProduceBrandTrap(displayName)) return false;
+  if (nameSuggestsShelfStableProducePack(displayName)) return false;
   const nameNorm = normalizeNameForMatch(displayName);
   if (hasPackagedDrinkKeywords(displayName)) return false;
 
@@ -3707,6 +4426,17 @@ function nameSuggestsPackagedDrink(displayName) {
  */
 function classifyCategoryBucket(labels, displayName, raw = {}) {
   const haystack = buildCategoryHaystack(labels, displayName);
+  const nameNorm = normalizeNameForMatch(displayName);
+
+  if (nameSuggestsNonFoodProductTitle(displayName) || haystackSuggestsNonFoodDepartment(haystack)) {
+    if (/\b(soap|dettol|shampoo|body wash|toiletries|hygiene|cleanser)\b/i.test(nameNorm + haystack)) {
+      return CATEGORY_BUCKETS.HEALTH_BEAUTY;
+    }
+    if (/\b(household|cleaning|laundry|detergent|home care)\b/i.test(haystack)) {
+      return CATEGORY_BUCKETS.HOUSEHOLD;
+    }
+    return CATEGORY_BUCKETS.CONFECTIONERY;
+  }
 
   // Tên đã rõ là trái/rau tươi → ưu tiên trước nhãn "Drinks" từ API
   if (
@@ -3737,14 +4467,22 @@ function classifyCategoryBucket(labels, displayName, raw = {}) {
   }
   if (/\b(bakery|bread|baked)\b/i.test(haystack)) return CATEGORY_BUCKETS.BAKERY;
   if (/\b(frozen|freezer)\b/i.test(haystack)) return CATEGORY_BUCKETS.FROZEN;
-  if (/\b(pantry|grocery|snack|confectionery)\b/i.test(haystack)) {
+  if (/\b(confectionery|candy|lollies|snack bar)\b/i.test(haystack)) {
+    return CATEGORY_BUCKETS.CONFECTIONERY;
+  }
+  if (/\b(health|beauty|personal care|toiletries|soap|shampoo)\b/i.test(haystack)) {
+    return CATEGORY_BUCKETS.HEALTH_BEAUTY;
+  }
+  if (/\b(household|cleaning|laundry|home care)\b/i.test(haystack)) {
+    return CATEGORY_BUCKETS.HOUSEHOLD;
+  }
+  if (/\b(pantry|grocery|snack)\b/i.test(haystack)) {
     return CATEGORY_BUCKETS.PANTRY;
   }
 
   if (nameSuggestsPackagedDrink(displayName)) return CATEGORY_BUCKETS.DRINKS;
   if (looksLikeLooseFreshProduceName(displayName)) return CATEGORY_BUCKETS.FRESH_PRODUCE;
 
-  const nameNorm = normalizeNameForMatch(displayName);
   const meatTokens = [
     'pork',
     'beef',
@@ -3763,7 +4501,10 @@ function classifyCategoryBucket(labels, displayName, raw = {}) {
   if (meatTokens.some((token) => haystackHasWord(nameNorm, token))) {
     return CATEGORY_BUCKETS.MEAT_SEAFOOD;
   }
-  if (PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(nameNorm, kw))) {
+  if (
+    PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(nameNorm, kw)) &&
+    !nameSuggestsNonFoodProductTitle(displayName)
+  ) {
     return CATEGORY_BUCKETS.FRESH_PRODUCE;
   }
 
@@ -3772,7 +4513,9 @@ function classifyCategoryBucket(labels, displayName, raw = {}) {
 
 function resolveProductBucket(productOrName, rawFallback = null) {
   if (productOrName && typeof productOrName === 'object') {
-    if (productOrName.categoryBucket) return productOrName.categoryBucket;
+    if (productOrName.categoryBucket) {
+      return normalizeCategoryBucketLabel(productOrName.categoryBucket) || productOrName.categoryBucket;
+    }
     return classifyCategoryBucket(
       productOrName.categoryLabels || [],
       productOrName.name || '',
@@ -3789,10 +4532,17 @@ function resolveProductName(input) {
 
 /** Hai bucket có được ghép / so sánh với nhau không. */
 function areCategoryBucketsCompatible(bucketA, bucketB) {
-  const a = bucketA || CATEGORY_BUCKETS.UNKNOWN;
-  const b = bucketB || CATEGORY_BUCKETS.UNKNOWN;
+  const a = normalizeCategoryBucketLabel(bucketA) || CATEGORY_BUCKETS.UNKNOWN;
+  const b = normalizeCategoryBucketLabel(bucketB) || CATEGORY_BUCKETS.UNKNOWN;
   if (a === b) return true;
   if (a === CATEGORY_BUCKETS.UNKNOWN || b === CATEGORY_BUCKETS.UNKNOWN) return true;
+
+  if (a === CATEGORY_BUCKETS.FRESH_PRODUCE && FRESH_PRODUCE_INCOMPATIBLE_BUCKETS.has(b)) {
+    return false;
+  }
+  if (b === CATEGORY_BUCKETS.FRESH_PRODUCE && FRESH_PRODUCE_INCOMPATIBLE_BUCKETS.has(a)) {
+    return false;
+  }
 
   return !CATEGORY_INCOMPATIBLE_PAIRS.some(
     ([left, right]) => (a === left && b === right) || (a === right && b === left)
@@ -3809,16 +4559,19 @@ function areProductCategoriesCompatible(productA, productB) {
   const bucketA = resolveProductBucket(productA);
   const bucketB = resolveProductBucket(productB);
 
+  if (hasCrossDepartmentFoodNonFoodMismatch(nameA, productA, nameB, productB)) {
+    return false;
+  }
+  if (hasFreshProduceNonFoodKeywordConflict(nameA, productA, nameB, productB)) {
+    return false;
+  }
+
   const drinkA =
     bucketA === CATEGORY_BUCKETS.DRINKS || nameSuggestsPackagedDrink(nameA);
   const drinkB =
     bucketB === CATEGORY_BUCKETS.DRINKS || nameSuggestsPackagedDrink(nameB);
-  const freshA =
-    bucketA === CATEGORY_BUCKETS.FRESH_PRODUCE ||
-    looksLikeLooseFreshProduceName(nameA);
-  const freshB =
-    bucketB === CATEGORY_BUCKETS.FRESH_PRODUCE ||
-    looksLikeLooseFreshProduceName(nameB);
+  const freshA = productInFreshProduceContext(nameA, productA);
+  const freshB = productInFreshProduceContext(nameB, productB);
 
   if ((drinkA && freshB) || (drinkB && freshA)) return false;
 
@@ -3834,7 +4587,10 @@ function areProductCategoriesCompatible(productA, productB) {
  * "watermelon" → fresh_produce; "watermelon juice" → drinks.
  */
 function inferIntentBucketFromKeyword(keyword, listItem = {}) {
-  const combined = `${keyword || ''} ${listItem.keyword || ''}`.trim();
+  if (listItem?.is_fresh_produce === true) {
+    return CATEGORY_BUCKETS.FRESH_PRODUCE;
+  }
+  const combined = `${keyword || ''} ${listItem.clean_query || listItem.keyword || ''}`.trim();
   const core = stripWeightFromText(combined);
   const norm = normalizeNameForMatch(core);
   if (!norm) return null;
@@ -3901,21 +4657,26 @@ function isProductEligibleForSearchIntent(product, keyword, listItem = {}) {
   if (intent === CATEGORY_BUCKETS.FRESH_PRODUCE) {
     if (nameSuggestsPackagedDrink(name)) return false;
     if (nameSuggestsNonFreshProduceSnack(name)) return false;
+    if (nameSuggestsNonFoodProductTitle(name)) return false;
+    if (productInNonFoodDepartment(product, name)) return false;
 
     // Tên rõ là trái tươi dù API gán nhầm bucket "drinks"
     if (
       productNameMatchesProduceKeyword(name, keyword) &&
-      !nameSuggestsPackagedDrink(name)
+      !nameSuggestsPackagedDrink(name) &&
+      !nameSuggestsNonFoodProductTitle(name)
     ) {
       return true;
     }
 
     if (bucket === CATEGORY_BUCKETS.DRINKS) return false;
+    if (FRESH_PRODUCE_INCOMPATIBLE_BUCKETS.has(bucket)) return false;
     if (bucket === CATEGORY_BUCKETS.FRESH_PRODUCE) return true;
     if (bucket === CATEGORY_BUCKETS.UNKNOWN) {
       return (
         looksLikeLooseFreshProduceName(name) ||
-        productNameMatchesProduceKeyword(name, keyword)
+        (productNameMatchesProduceKeyword(name, keyword) &&
+          !nameSuggestsNonFoodProductTitle(name))
       );
     }
     return areCategoryBucketsCompatible(intent, bucket);
@@ -3956,7 +4717,10 @@ function filterProductsForSearchIntent(products, keyword, listItem = {}) {
       if (nameSuggestsProcessedNotCoreIngredient(name, keyword)) return false;
       if (nameSuggestsPackagedDrink(name)) return false;
       if (nameSuggestsNonFreshProduceSnack(name)) return false;
+      if (nameSuggestsNonFoodProductTitle(name)) return false;
+      if (productInNonFoodDepartment(p, name)) return false;
       if (resolveProductBucket(p) === CATEGORY_BUCKETS.DRINKS) return false;
+      if (FRESH_PRODUCE_INCOMPATIBLE_BUCKETS.has(resolveProductBucket(p))) return false;
       if (!isFreshProduceCandidateForIntent(name, p, keyword, listItem)) return false;
       return (
         productNameMatchesProduceKeyword(name, keyword) ||
@@ -4291,7 +5055,10 @@ function checkSizeCompatibility(nameA, nameB, productA = null, productB = null) 
   return 'ok';
 }
 
-/** Điểm ghép cặp tổng hợp: danh mục + tên + loại + khối lượng */
+/**
+ * Cross-store compare pair scorer (scoreProductPairForCompare).
+ * Danh mục + tên + loại + khối lượng + guardrails phi thực phẩm.
+ */
 function scoreProductPair(woolInput, colesInput) {
   const woolName = resolveProductName(woolInput);
   const colesName = resolveProductName(colesInput);
@@ -4361,6 +5128,8 @@ function scoreProductForKeyword(
 
   if (!isProductEligibleForSearchIntent(productRef, keyword, listItem)) return 0;
   if (nameSuggestsNonFreshProduceSnack(displayName)) return 0;
+  if (nameSuggestsNonFoodProductTitle(displayName)) return 0;
+  if (productInNonFoodDepartment(productRef, displayName)) return 0;
 
   if (nameSuggestsProcessedNotCoreIngredient(displayName, keyword)) return 0;
   if (!isFreshProduceCandidateForIntent(displayName, productRef, keyword, listItem)) return 0;
@@ -4405,9 +5174,10 @@ function scoreProductForKeyword(
     score = Math.min(score + 0.08, 1);
   }
 
-  // Trái/rau (watermelon, apple…): tên khớp từ khóa → điểm sàn cao, vẫn loại chai nước ép
+  // Trái/rau (watermelon, apple…): điểm sàn chỉ khi đúng loại tươi — không rice/soap/jar
   if (
     isProduceSearchIntent(keyword, listItem) &&
+    isGenuineFreshProduceForIntent(displayName, productRef, keyword, listItem) &&
     productNameMatchesProduceKeyword(displayName, keyword) &&
     !nameSuggestsPackagedDrink(displayName)
   ) {
@@ -4449,6 +5219,9 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
 
   const scored = candidates
     .filter((product) => productNameContainsSearchKeywords(product.name, keyword, listItem))
+    .filter((product) =>
+      isGenuineFreshProduceForIntent(product.name, product, keyword, listItem)
+    )
     .map((product) => ({
       product,
       score: scoreProductForMatching(product, keyword, listItem),
@@ -4485,22 +5258,15 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
     threshold = Math.min(threshold, 0.28);
   }
 
+  if (
+    best &&
+    isProduceSearchIntent(keyword, listItem) &&
+    !isGenuineFreshProduceForIntent(best.name, best, keyword, listItem)
+  ) {
+    return { product: null, score: bestScore };
+  }
+
   if (!best || bestScore < threshold) {
-    if (isProduceSearchIntent(keyword, listItem)) {
-      const fallback = products.find((p) => {
-        const name = p?.name || '';
-        return (
-          productNameMatchesProduceKeyword(name, keyword) &&
-          !nameSuggestsPackagedDrink(name) &&
-          !nameSuggestsNonFreshProduceSnack(name) &&
-          isFreshProduceCandidateForIntent(name, p, keyword, listItem) &&
-          resolveProductBucket(p) !== CATEGORY_BUCKETS.DRINKS
-        );
-      });
-      if (fallback) {
-        return { product: fallback, score: Number(Math.max(bestScore, 0.45).toFixed(2)) };
-      }
-    }
     return { product: null, score: bestScore };
   }
 
@@ -4945,7 +5711,7 @@ function buildQuantityHint(listItem) {
 
 /** Chuỗi tìm kiếm RapidAPI từ 1 dòng giỏ đã parse */
 function buildSearchQueryFromListItem(listItem) {
-  const keyword = String(listItem.keyword || '').trim();
+  const keyword = String(listItem.clean_query || listItem.keyword || '').trim();
   const hint = buildQuantityHint(listItem);
   return hint ? `${keyword} ${hint}` : keyword;
 }
@@ -5046,7 +5812,9 @@ function pickPackageFallbackFromProducts(products, listItem) {
   }
 
   const keyword = listItem.keyword;
-  const candidates = filterProductsForSearchIntent(products, keyword, listItem);
+  const candidates = filterProductsForSearchIntent(products, keyword, listItem).filter((product) =>
+    isGenuineFreshProduceForIntent(product.name, product, keyword, listItem)
+  );
   if (!candidates.length) return null;
 
   let best = null;
@@ -5139,32 +5907,59 @@ async function fetchSmallerPackProductItems(supermarket, listItem) {
 }
 
 /**
- * Resolve the best product for one store: direct match → pack fallback → smaller-pack search.
+ * Resolve the best product for one store (strict 2-step pipeline):
+ * 1) OpenAI already returned clean_query + is_fresh_produce (no product IDs).
+ * 2) Programmatic Mongo filter → RapidAPI fetch → sync → filter → score.
  */
 async function resolveStoreLineMatch(supermarket, searchQuery, listItem) {
   let storeError = null;
+  const matchKeyword = listItem.clean_query || listItem.keyword;
+
+  try {
+    const mongoProduct = await findBestProductInMongo(supermarket, listItem);
+    if (mongoProduct) {
+      console.log(`  ✓ ${supermarket} Mongo match: ${mongoProduct.name}`);
+      return {
+        product: applyListItemPricing(mongoProduct, listItem),
+        score: 1,
+        error: null,
+        packageFallback: false,
+        matchSource: 'mongo',
+      };
+    }
+  } catch (error) {
+    console.warn(`  ⚠ ${supermarket} Mongo lookup failed:`, error.message);
+  }
+
   let allItems = [];
 
   try {
     const result = await fetchStoreProducts(supermarket, searchQuery, listItem);
     allItems = result.items;
     storeError = result.error;
+    await syncProductsToMongo(supermarket, matchKeyword, allItems);
   } catch (error) {
     storeError = formatStoreError(supermarket, error);
     return { product: null, score: 0, error: storeError, packageFallback: false };
   }
 
-  let picked = pickBestProductMatch(allItems, listItem.keyword, listItem);
+  const eligible = filterProductsByParsedLineMongoRules(allItems, listItem);
+  const requiresStrictFreshProduce = listItem?.is_fresh_produce === true;
+
+  let picked = pickBestProductMatch(eligible, matchKeyword, listItem);
   if (picked.product) {
     return {
       product: applyListItemPricing(picked.product, listItem),
       score: picked.score,
       error: storeError,
       packageFallback: false,
+      matchSource: 'programmatic',
     };
   }
 
-  let pkg = pickPackageFallbackFromProducts(allItems, listItem);
+  let pkg = requiresStrictFreshProduce
+    ? null
+    : pickPackageFallbackFromProducts(eligible.length ? eligible : allItems, listItem);
   if (pkg) {
     console.log(`  📦 ${supermarket} package fallback: ${pkg.pricingNote}`);
     return {
@@ -5172,13 +5967,21 @@ async function resolveStoreLineMatch(supermarket, searchQuery, listItem) {
       score: pkg.score,
       error: storeError,
       packageFallback: true,
+      matchSource: 'package_fallback',
     };
   }
 
   const extraItems = await fetchSmallerPackProductItems(supermarket, listItem);
   if (extraItems.length) {
     allItems = mergeProductLists(allItems, extraItems, RESULT_LIMIT * 2);
-    pkg = pickPackageFallbackFromProducts(allItems, listItem);
+    await syncProductsToMongo(supermarket, matchKeyword, extraItems);
+    const mergedEligible = filterProductsByParsedLineMongoRules(allItems, listItem);
+    pkg = requiresStrictFreshProduce
+      ? null
+      : pickPackageFallbackFromProducts(
+          mergedEligible.length ? mergedEligible : allItems,
+          listItem
+        );
     if (pkg) {
       console.log(`  📦 ${supermarket} package fallback (extra search): ${pkg.pricingNote}`);
       return {
@@ -5186,6 +5989,7 @@ async function resolveStoreLineMatch(supermarket, searchQuery, listItem) {
         score: pkg.score,
         error: storeError,
         packageFallback: true,
+        matchSource: 'package_fallback',
       };
     }
   }
@@ -5262,25 +6066,98 @@ function formatRequestKeywordLabel(request) {
 // 3c. AI SHOPPING LIST – PARSE PROMPT & TỐI ƯU GIỎ
 // ============================================================
 
-const SHOPPING_LIST_SYSTEM_PROMPT = `You extract grocery shopping list items from natural language for the AI Cart Optimizer.
-Return ONLY valid JSON: an array of objects with exactly these fields:
-- "keyword": English search term for Australian supermarkets (e.g. "rice", "belly pork", "milk", "fresh cucumber", "watermelon")
-- "quantity": number (default 1)
-- "unit": one of kg, g, L, ml, each, pack, bunch
+const SHOPPING_LIST_SYSTEM_PROMPT = `You parse grocery shopping lists for Australian supermarkets (Coles, Woolworths).
 
-Parsing rules:
-- Use simple product keywords suitable for Coles and Woolworths search.
-- Keep full raw-ingredient phrases intact (e.g. "chicken thigh", "pork belly", "beef mince") — do not shorten to generic "chicken" or "meat".
-- Preserve food state/form in keywords when the user implies fresh/raw produce (e.g. "cucumber" → "fresh cucumber", "watermelon" → "watermelon" not "watermelon juice" or "watermelon fingers").
-- Do not collapse distinct forms: pickled/canned/frozen/pre-cut items are different from fresh whole produce — only emit those forms if the user explicitly asked for them.
-- Convert volumes: 2L → quantity 2, unit "L". 500ml → quantity 500, unit "ml".
-- "2 kg rice" → keyword "rice", quantity 2, unit "kg".
-- No markdown, no explanation, only the JSON array.
+Return ONLY a valid JSON array. Each object must have EXACTLY these four fields — nothing else:
+- "original_text": the user's line as written (e.g. "fresh cucumber (2 kg)", "watermelon (x2)")
+- "clean_query": bare English product name for database search — NO weights, NO quantities (e.g. "cucumber", "watermelon", "rice", "pork belly")
+- "category": supermarket department string (e.g. "Fruit & Veg", "Meat", "Dairy", "Pantry", "Drinks", "Frozen")
+- "is_fresh_produce": boolean — true ONLY for raw whole fruit/vegetables the user wants fresh (cucumber, watermelon, broccoli, apple, etc.)
 
-Cart Optimizer matching policy (enforced when pairing Coles ↔ Woolworths per line item):
-${PRODUCT_MATCHING_RULES}`;
+Rules:
+- Do NOT return product IDs, prices, brands, or matched product objects.
+- clean_query must be the core ingredient only: "cucumber" not "pickled cucumber", "watermelon" not "watermelon juice".
+- is_fresh_produce: true for fresh fruit/veg; false for juice, drinks, pickled, canned, frozen meals, soap, snacks, rice, meat, dairy, pantry.
+- If the user explicitly asks for juice/pickled/canned/frozen, set is_fresh_produce false and reflect that form in clean_query only if they asked for it.
+- Keep multi-word ingredients intact ("pork belly", "chicken thigh", "beef mince").
+- No markdown, no explanation — only the JSON array.`;
 
-/** Gọi OpenAI để bóc tách danh sách món */
+function parseQuantityUnitFromOriginalText(originalText) {
+  const raw = String(originalText || '');
+
+  const parenMatch = raw.match(/\((\d+(?:\.\d+)?)\s*(kg|g|l|ml|each|pack|bunch)?\)/i);
+  if (parenMatch) {
+    return {
+      quantity: parseFloat(parenMatch[1]),
+      unit: (parenMatch[2] || 'each').toLowerCase(),
+    };
+  }
+
+  const xMatch = raw.match(/\(x\s*(\d+)\)/i) || raw.match(/\bx\s*(\d+)\b/i);
+  if (xMatch) {
+    return { quantity: parseInt(xMatch[1], 10), unit: 'each' };
+  }
+
+  const prefixMatch = raw.match(/^(\d+(?:\.\d+)?)\s*(kg|g|l|ml|each|pack|bunch)?\s+/i);
+  if (prefixMatch) {
+    return {
+      quantity: parseFloat(prefixMatch[1]),
+      unit: (prefixMatch[2] || 'each').toLowerCase(),
+    };
+  }
+
+  return { quantity: 1, unit: 'each' };
+}
+
+function inferIsFreshProduceFromLine(row, originalText, cleanQuery) {
+  if (row?.is_fresh_produce === true) return true;
+  if (row?.is_fresh_produce === false) return false;
+
+  const cat = String(row?.category || '').toLowerCase();
+  if (/fruit|veg|produce/.test(cat)) return true;
+
+  const combined = `${originalText} ${cleanQuery}`.toLowerCase();
+  if (/\b(juice|drink|pickled|canned|frozen meal|soap)\b/.test(combined)) return false;
+
+  const norm = normalizeNameForMatch(stripWeightFromText(cleanQuery));
+  return PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(norm, kw));
+}
+
+/** Map OpenAI / fallback row → internal list item (qty derived from original_text). */
+function normalizeParsedLineItem(row, fallbackOriginal = '') {
+  const original_text = String(
+    row.original_text || row.text || fallbackOriginal || ''
+  ).trim();
+  let clean_query = String(
+    row.clean_query || row.keyword || row.item || row.name || ''
+  )
+    .trim()
+    .replace(/^fresh\s+/i, '')
+    .trim();
+
+  if (!clean_query && original_text) {
+    clean_query = stripWeightFromText(original_text).replace(/^fresh\s+/i, '').trim();
+  }
+  if (!clean_query && !original_text) return null;
+
+  const is_fresh_produce = inferIsFreshProduceFromLine(row, original_text, clean_query);
+  const category = String(
+    row.category || (is_fresh_produce ? 'Fruit & Veg' : 'Grocery')
+  ).trim();
+  const qty = parseQuantityUnitFromOriginalText(original_text);
+
+  return {
+    original_text: original_text || clean_query,
+    clean_query,
+    is_fresh_produce,
+    category,
+    keyword: clean_query,
+    quantity: qty.quantity,
+    unit: qty.unit,
+  };
+}
+
+/** Gọi OpenAI — chỉ parse, không chọn sản phẩm */
 async function parseShoppingListWithAI(promptText) {
   if (!openaiClient) {
     throw new Error(
@@ -5290,7 +6167,7 @@ async function parseShoppingListWithAI(promptText) {
 
   const completion = await openaiClient.chat.completions.create({
     model: OPENAI_MODEL,
-    temperature: 0.2,
+    temperature: 0.1,
     messages: [
       { role: 'system', content: SHOPPING_LIST_SYSTEM_PROMPT },
       { role: 'user', content: promptText },
@@ -5306,12 +6183,8 @@ async function parseShoppingListWithAI(promptText) {
   }
 
   return parsed
-    .map((row) => ({
-      keyword: String(row.keyword || row.item || row.name || '').trim(),
-      quantity: Number(row.quantity) > 0 ? Number(row.quantity) : 1,
-      unit: String(row.unit || 'each').trim().toLowerCase(),
-    }))
-    .filter((row) => row.keyword);
+    .map((row) => normalizeParsedLineItem(row))
+    .filter(Boolean);
 }
 
 /** Dự phòng khi không có OpenAI: regex tách từng dòng */
@@ -5321,19 +6194,9 @@ function parseShoppingListFallback(promptText) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  return segments.map((part) => {
-    const match = part.match(
-      /^(\d+(?:\.\d+)?)\s*(kg|g|l|ml|each|pack|bunch)?\s+(.+)$/i
-    );
-    if (match) {
-      return {
-        keyword: match[3].trim(),
-        quantity: parseFloat(match[1]),
-        unit: (match[2] || 'each').toLowerCase(),
-      };
-    }
-    return { keyword: part, quantity: 1, unit: 'each' };
-  });
+  return segments
+    .map((part) => normalizeParsedLineItem({}, part))
+    .filter(Boolean);
 }
 
 /** Pick the cheapest store for one cart line (PRICE_EPSILON tie → lowest wins). */
@@ -6998,14 +7861,28 @@ if (process.env.NODE_ENV !== 'production') {
 
 module.exports = app;
 module.exports.__matchingTest__ = {
+  normalizeParsedLineItem,
+  parseQuantityUnitFromOriginalText,
+  productMatchesParsedLineMongoFilters,
+  filterProductsByParsedLineMongoRules,
+  buildMongoProductQueryFilters,
+  freshProduceRankingScoreOverride,
   nameSuggestsProcessedNotCoreIngredient,
   searchIntentSuggestsRawIngredient,
   nameSuggestsProcessedPreparedFood,
+  nameSuggestsNonFoodProductTitle,
   nameSuggestsPreservedFoodState,
   nameSuggestsConveniencePreCut,
   nameSuggestsBulkWholeProduce,
   hasFoodStateFormMismatch,
   hasPackagingFormMismatch,
+  hasCrossDepartmentFoodNonFoodMismatch,
+  hasFreshProduceNonFoodKeywordConflict,
+  hasBulkVsMicroWeightMismatch,
+  nameBorrowedProduceKeywordForPantry,
+  nameSuggestsShelfStableProducePack,
+  isGenuineFreshProduceForIntent,
+  productConflictsWithWholeProduceRequest,
   evaluatePairingGuardrails,
   pickBestProductMatch,
   filterProductsForSearchIntent,
