@@ -5316,6 +5316,10 @@ function buildStoreOptionsForKeyword(products, keyword, listItem = {}) {
   return scored.map((entry) => entry.product);
 }
 
+function isNumericSearchTerm(searchTerm) {
+  return /^\d+$/.test(String(searchTerm || '').trim());
+}
+
 /** Khóa dedupe sản phẩm khi ghép hàng (tránh lặp cặp / dòng thừa). */
 function productStableKey(product) {
   if (!product) return '';
@@ -5611,6 +5615,16 @@ function attachMatrixRowComparison(matrixRow) {
 function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems) {
   const item = listItem || buildListItemForKeywordSearch(keyword);
   const kw = String(keyword || item.keyword || '').trim();
+
+  // Barcode fallback search: keyword là toàn số nên tên sản phẩm không thể khớp text.
+  // Nếu API siêu thị đã trả kết quả cho chuỗi số, coi item đầu tiên mỗi store là match chính xác.
+  if (isNumericSearchTerm(kw)) {
+    return buildAlignedCompareMatrixFromProducts(
+      kw,
+      Array.isArray(woolItems) ? woolItems[0] || null : null,
+      Array.isArray(colesItems) ? colesItems[0] || null : null
+    );
+  }
 
   const woolworthsOptions = buildStoreOptionsForKeyword(woolItems, item.keyword, item);
   const colesOptions = buildStoreOptionsForKeyword(colesItems, item.keyword, item);
@@ -7891,6 +7905,7 @@ module.exports.__matchingTest__ = {
   scoreProductPair,
   buildSmartComparePairs,
   buildAlignedCompareMatrix,
+  isNumericSearchTerm,
   getProductComparablePricePerKg,
   matchQualifiersCompatible,
   produceVariantConflict,

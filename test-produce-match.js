@@ -31,6 +31,8 @@ const {
   filterProductsByParsedLineMongoRules,
   buildMongoProductQueryFilters,
   freshProduceRankingScoreOverride,
+  buildAlignedCompareMatrix,
+  isNumericSearchTerm,
 } = __matchingTest__;
 
 function assert(cond, msg) {
@@ -451,5 +453,32 @@ assert(
     !/juice|soap|pickled/i.test(filteredCucumber[0].name),
   'mongo filter keeps only genuine fresh cucumber'
 );
+
+// Barcode fallback: numeric search bypasses similarity/text filters and pairs first raw hits.
+const barcodeKeyword = '9310012345678';
+const woolBarcodeHit = {
+  name: 'Woolworths Home Brand Milk 2L',
+  price: 3.1,
+  supermarket: 'Woolworths',
+};
+const colesBarcodeHit = {
+  name: 'Coles Full Cream Milk 2L',
+  price: 3,
+  supermarket: 'Coles',
+};
+assert(isNumericSearchTerm(barcodeKeyword), 'barcode fallback search is numeric');
+const barcodeMatrix = buildAlignedCompareMatrix(
+  barcodeKeyword,
+  { keyword: barcodeKeyword, quantity: 1, unit: 'each' },
+  [woolBarcodeHit, woolWatermelon],
+  [colesBarcodeHit, colesWholeWatermelon]
+);
+assert(barcodeMatrix.matrixRows.length === 1, 'numeric search creates one direct row');
+assert(
+  barcodeMatrix.matrixRows[0].woolworths === woolBarcodeHit &&
+    barcodeMatrix.matrixRows[0].coles === colesBarcodeHit,
+  'numeric search pairs first Woolworths and Coles hits directly'
+);
+assert(barcodeMatrix.matrixRows[0].matchType === 'barcode', 'numeric row is marked barcode');
 
 console.log('test-produce-match.js: all assertions passed');
