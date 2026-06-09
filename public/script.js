@@ -1312,11 +1312,6 @@ async function searchProducts() {
     return alert('Enter a product name (e.g. milk, rice 1kg).');
   }
 
-  // Nếu người dùng gõ barcode vào ô Search, không gửi số xuống scraper siêu thị.
-  if (isBarcodeSearchTerm(searchTerm)) {
-    return searchBarcodeViaOpenFoodFacts(searchTerm);
-  }
-
   await ensureLocationConsent();
   await runCompareSearch({ keyword: searchTerm });
 }
@@ -1363,11 +1358,18 @@ async function translateBarcodeToProductName(scannedCode) {
       if (!response.ok) continue;
 
       const data = await response.json();
-      // status: 0 nghĩa là OFF không có mã này; không báo lỗi, chuyển sang fallback siêu thị.
+      console.log('OFF API Response:', data);
+      // status: 0 nghĩa là OFF không có mã này; frontend sẽ dừng và yêu cầu nhập tên.
       if (data?.status !== 1) continue;
 
-      const product = data.product || {};
-      const productName = String(product.product_name || product.product_name_en || '')
+      const product = data.product;
+      const productName = String(
+        product?.product_name_en ||
+          product?.product_name ||
+          product?.generic_name ||
+          product?.brands ||
+          ''
+      )
         .replace(/\s+/g, ' ')
         .trim();
 
@@ -1390,35 +1392,11 @@ async function searchBarcodeViaOpenFoodFacts(barcode) {
 
   document.querySelector('.main-tab[data-tab="compare"]')?.click();
   document.getElementById('itemInput').value = digits;
-
-  try {
-    setBarcodeLookupStatus('Scanning...');
-
-    const offMatch = await translateBarcodeToProductName(digits);
-
-    if (!offMatch?.productName) {
-      // Không fallback sang search số ở siêu thị vì API fuzzy search trả kết quả rác.
-      setBarcodeLookupStatus(BARCODE_DATABASE_NOT_FOUND_MESSAGE, true);
-      setSearchResultsVisible(false);
-      return;
-    }
-
-    const { productName, matchedBarcode } = offMatch;
-    setBarcodeLookupStatus(`Found: ${productName}, comparing...`);
-    document.getElementById('itemInput').value = productName;
-
-    await ensureLocationConsent();
-
-    // Chỉ gửi keyword bằng chữ xuống backend để Coles/Woolworths search text an toàn.
-    await runCompareSearch({
-      keyword: productName,
-      barcodeContext: { scannedBarcode: digits, matchedBarcode, productName },
-    });
-  } catch (error) {
-    const message = error?.message || BARCODE_DATABASE_NOT_FOUND_MESSAGE;
-    setBarcodeLookupStatus(message, true);
-    setSearchResultsVisible(false);
-  }
+  await ensureLocationConsent();
+  return runCompareSearch({
+    keyword: digits,
+    barcodeContext: { scannedBarcode: digits },
+  });
 }
 
 /** Called after a successful barcode scan (from barcode-scanner.js) */
@@ -1443,10 +1421,8 @@ async function runCompareSearch({ keyword, barcode, barcodeContext }) {
   const summarySection = document.getElementById('summary-section');
   const summaryText = document.getElementById('summary-text');
   const searchBtn = document.getElementById('searchBtn');
-
-  const url = barcode
-    ? buildApiUrl(`/api/compare/barcode?barcode=${encodeURIComponent(barcode)}`)
-    : buildApiUrl(`/api/compare?keyword=${encodeURIComponent(keyword)}`);
+  let finalKeyword = String(keyword || barcode || '').trim();
+  let finalBarcodeContext = barcodeContext || null;
 
   searchBtn.disabled = true;
   if (alignedRowsEl) alignedRowsEl.innerHTML = '<p class="loading">Loading...</p>';
@@ -1455,14 +1431,48 @@ async function runCompareSearch({ keyword, barcode, barcodeContext }) {
   if (colesCont) colesCont.innerHTML = '<p class="loading">Loading...</p>';
   hideRevealSection(summarySection);
   removeBarcodeScanBanner();
-  if (barcodeContext) {
-    showBarcodeScanBanner(barcodeContext.statusMessage || 'Comparing prices...');
+  if (finalBarcodeContext) {
+    showBarcodeScanBanner(finalBarcodeContext.statusMessage || 'Comparing prices...');
   }
   hideNearestStoreBanner();
 
   try {
+    // Chốt chặn sâu nhất trước khi gọi backend: barcode phải được dịch qua OFF.
+    // Không bao giờ gửi 12-14 chữ số vào /api/compare?keyword=...
+    if (isBarcodeSearchTerm(finalKeyword)) {
+      const scannedBarcode = finalKeyword;
+      setBarcodeLookupStatus('Scanning...');
+
+      let offMatch = null;
+      try {
+        offMatch = await translateBarcodeToProductName(scannedBarcode);
+      } catch (err) {
+        setBarcodeLookupStatus('Error identifying barcode.', true);
+        setSearchResultsVisible(false);
+        return false;
+      }
+
+      if (!offMatch?.productName) {
+        setBarcodeLookupStatus(BARCODE_DATABASE_NOT_FOUND_MESSAGE, true);
+        setSearchResultsVisible(false);
+        return false;
+      }
+
+      finalKeyword = offMatch.productName;
+      finalBarcodeContext = {
+        ...(finalBarcodeContext || {}),
+        scannedBarcode,
+        matchedBarcode: offMatch.matchedBarcode,
+        productName: offMatch.productName,
+      };
+      console.log('OFF translated barcode to:', finalKeyword);
+      setBarcodeLookupStatus(`Found: ${finalKeyword}, comparing...`);
+      document.getElementById('itemInput').value = finalKeyword;
+    }
+
+    const url = buildApiUrl(`/api/compare?keyword=${encodeURIComponent(finalKeyword)}`);
     const response = await apiFetchCompare(url, {
-      timeoutMs: barcode ? BARCODE_FETCH_TIMEOUT_MS : COMPARE_FETCH_TIMEOUT_MS,
+      timeoutMs: finalBarcodeContext ? BARCODE_FETCH_TIMEOUT_MS : COMPARE_FETCH_TIMEOUT_MS,
     });
     const data = await response.json();
 
@@ -1473,7 +1483,7 @@ async function runCompareSearch({ keyword, barcode, barcodeContext }) {
         )) ||
       (Array.isArray(data?.items) && data.items.length > 0);
 
-    if (barcode && !hasResults) {
+    if (finalBarcodeContext && !hasResults) {
       const message = data?.error || BARCODE_NOT_FOUND_MESSAGE;
       if (alignedRowsEl) {
         alignedRowsEl.innerHTML = `<p class="error barcode-not-found">${escapeHtml(message)}</p>`;
@@ -1490,10 +1500,13 @@ async function runCompareSearch({ keyword, barcode, barcodeContext }) {
       throw new Error(data.error || 'Could not load data.');
     }
 
-    displayCompareResults(data, { fromBarcode: Boolean(barcode), barcodeContext });
-    if (barcodeContext?.productName) {
+    displayCompareResults(data, {
+      fromBarcode: Boolean(finalBarcodeContext),
+      barcodeContext: finalBarcodeContext,
+    });
+    if (finalBarcodeContext?.productName) {
       showBarcodeScanBanner(
-        `Barcode scanned: ${barcodeContext.scannedBarcode} — Found: ${barcodeContext.productName}. Showing matched products below.`
+        `Barcode scanned: ${finalBarcodeContext.scannedBarcode} — Found: ${finalBarcodeContext.productName}. Showing matched products below.`
       );
     }
     renderNearestStoreBanner(data.nearestStores);
@@ -1504,17 +1517,17 @@ async function runCompareSearch({ keyword, barcode, barcodeContext }) {
       window.ShoppingSmartPwa?.notifyUserAction?.();
     }
 
-    if (keyword && !barcode) {
-      addToSearchHistory(keyword, 'search');
+    if (finalKeyword) {
+      addToSearchHistory(finalKeyword, 'search');
     }
     return hasResults;
   } catch (err) {
     let message = err.message || 'Could not load results.';
-    if (barcode) {
+    if (finalBarcodeContext) {
       message = BARCODE_NOT_FOUND_MESSAGE;
     }
     if (err.name === 'AbortError') {
-      message = barcode
+      message = finalBarcodeContext
         ? 'Barcode lookup timed out. Try again — the second scan is usually faster once cached.'
         : 'Search timed out or was cancelled. Check your internet, then try again. Cached results may load faster on repeat searches.';
     }

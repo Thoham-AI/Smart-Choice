@@ -126,7 +126,7 @@ const openaiClient = process.env.OPENAI_API_KEY
   : null;
 
 // ============================================================
-// 1b. MONGODB – API CACHE (database from URI path, default shoppingsmart)
+// 1b. MONGODB – API CACHE (single application database: smartchoice)
 // ============================================================
 const MONGODB_URI = mongo.getUri();
 const API_CACHE_COLLECTION = 'api_cache';
@@ -2147,7 +2147,7 @@ async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, optio
     if (hit) {
       const location = getRequestLocation();
       scheduleWriteApiCache(supermarket, query, directRaw, location);
-      if (!isNameSearch) {
+      if (!isNameSearch && query !== barcode) {
         scheduleWriteApiCache(supermarket, barcode, directRaw, location);
       }
       return hit;
