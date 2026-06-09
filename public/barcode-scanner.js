@@ -298,7 +298,7 @@
     }
   }
 
-  /** Khi quét thành công: khóa trùng, tắt camera, gọi API so giá */
+  /** Khi quét thành công: khóa trùng, tắt camera, rồi dịch barcode sang tên sản phẩm trước khi so giá */
   async function onScanSuccess(decodedText) {
     if (scanLocked) return;
 
@@ -306,7 +306,7 @@
     if (barcode.length < 8) return;
 
     scanLocked = true;
-    setStatus(`Đã đọc mã: ${barcode}`);
+    setStatus('Scanning...');
 
     await stopScanner(true);
     closeModal();

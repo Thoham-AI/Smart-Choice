@@ -24,6 +24,8 @@ const LOCATION_CONSENT_MESSAGE =
 
 const BARCODE_NOT_FOUND_MESSAGE =
   'Barcode not found. Try typing the product name instead.';
+const BARCODE_IDENTIFY_ERROR_MESSAGE =
+  "Sorry, we couldn't identify this product's barcode. Please try typing its name.";
 
 /**
  * Coordinates forwarded on every API call (headers + query).
@@ -1313,6 +1315,62 @@ async function searchProducts() {
   await runCompareSearch({ keyword });
 }
 
+function barcodeLookupVariants(barcode) {
+  const digits = String(barcode || '').replace(/\D/g, '');
+  const variants = new Set([digits]);
+  // Một số barcode UPC-A 12 số cần thêm số 0 đầu để thành EAN-13.
+  if (digits.length === 12) variants.add(`0${digits}`);
+  return [...variants].filter((code) => code.length >= 8);
+}
+
+function setBarcodeLookupStatus(message, isError = false) {
+  showBarcodeScanBanner(message, isError);
+  const alignedSection = document.getElementById('aligned-compare-section');
+  const alignedRowsEl = document.getElementById('aligned-compare-rows');
+  const wooliesCont = document.getElementById('woolworths-results');
+  const colesCont = document.getElementById('coles-results');
+
+  if (alignedSection) showRevealSection(alignedSection);
+  const className = isError ? 'error barcode-not-found' : 'loading';
+  const html = `<p class="${className}">${escapeHtml(message)}</p>`;
+  if (alignedRowsEl) alignedRowsEl.innerHTML = html;
+  if (wooliesCont) wooliesCont.innerHTML = html;
+  if (colesCont) colesCont.innerHTML = html;
+}
+
+async function translateBarcodeToProductName(scannedCode) {
+  const variants = barcodeLookupVariants(scannedCode);
+
+  for (const code of variants) {
+    try {
+      // Bước 1: dịch barcode -> tên sản phẩm bằng Open Food Facts.
+      const response = await fetch(
+        `https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`,
+        {
+          headers: { Accept: 'application/json' },
+        }
+      );
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      if (data?.status !== 1) continue;
+
+      const product = data.product || {};
+      const productName = String(product.product_name || product.product_name_en || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (productName.length >= 2) {
+        return { productName, matchedBarcode: code };
+      }
+    } catch (error) {
+      console.warn('Open Food Facts barcode lookup failed:', error);
+    }
+  }
+
+  throw new Error(BARCODE_IDENTIFY_ERROR_MESSAGE);
+}
+
 /** Called after a successful barcode scan (from barcode-scanner.js) */
 async function searchByBarcode(barcode) {
   const digits = String(barcode).replace(/\D/g, '');
@@ -1322,8 +1380,26 @@ async function searchByBarcode(barcode) {
 
   document.querySelector('.main-tab[data-tab="compare"]')?.click();
   document.getElementById('itemInput').value = digits;
-  await ensureLocationConsent();
-  await runCompareSearch({ barcode: digits });
+
+  try {
+    setBarcodeLookupStatus('Scanning...');
+    await ensureLocationConsent();
+
+    const { productName, matchedBarcode } = await translateBarcodeToProductName(digits);
+    setBarcodeLookupStatus(`Found: ${productName}`);
+    document.getElementById('itemInput').value = productName;
+
+    setBarcodeLookupStatus('Comparing prices...');
+    // Bước 2: dùng tên sản phẩm để chạy luồng search chữ như người dùng tự gõ.
+    await runCompareSearch({
+      keyword: productName,
+      barcodeContext: { scannedBarcode: digits, matchedBarcode, productName },
+    });
+  } catch (error) {
+    const message = error?.message || BARCODE_IDENTIFY_ERROR_MESSAGE;
+    setBarcodeLookupStatus(message, true);
+    setSearchResultsVisible(false);
+  }
 }
 
 window.searchByBarcode = searchByBarcode;
@@ -1332,7 +1408,7 @@ window.searchByBarcode = searchByBarcode;
  * Unified search by product name or barcode.
  * Shows results; scrolls to matched pairs when scanning barcode.
  */
-async function runCompareSearch({ keyword, barcode }) {
+async function runCompareSearch({ keyword, barcode, barcodeContext }) {
   // Single search / barcode → collapse AI panel (content preserved)
   collapseAiAnalyzeAccordion();
 
@@ -1355,6 +1431,9 @@ async function runCompareSearch({ keyword, barcode }) {
   if (colesCont) colesCont.innerHTML = '<p class="loading">Loading...</p>';
   hideRevealSection(summarySection);
   removeBarcodeScanBanner();
+  if (barcodeContext) {
+    showBarcodeScanBanner('Comparing prices...');
+  }
   hideNearestStoreBanner();
 
   try {
@@ -1387,7 +1466,12 @@ async function runCompareSearch({ keyword, barcode }) {
       throw new Error(data.error || 'Could not load data.');
     }
 
-    displayCompareResults(data, { fromBarcode: Boolean(barcode) });
+    displayCompareResults(data, { fromBarcode: Boolean(barcode), barcodeContext });
+    if (barcodeContext?.productName) {
+      showBarcodeScanBanner(
+        `Barcode scanned: ${barcodeContext.scannedBarcode} — Found: ${barcodeContext.productName}. Showing matched products below.`
+      );
+    }
     renderNearestStoreBanner(data.nearestStores);
 
     setSearchResultsVisible(hasResults);
@@ -1435,7 +1519,7 @@ function displayCompareResults(data, options = {}) {
   lastSimilarPairs = [];
 
   if (options.fromBarcode && data.scannedBarcode) {
-    showBarcodeScanBanner(data.scannedBarcode);
+    showBarcodeScanBanner(`Barcode scanned: ${data.scannedBarcode} — showing matched products below.`);
   }
 
   if (alignedRows.length) {
@@ -1943,14 +2027,15 @@ function buildAlignedMatrixCellHtml(
     </div>`;
 }
 
-function showBarcodeScanBanner(barcode) {
+function showBarcodeScanBanner(message, isError = false) {
   removeBarcodeScanBanner();
   const searchSection = document.querySelector('.search-section');
   if (!searchSection) return;
   const banner = document.createElement('p');
   banner.id = 'barcode-scan-banner';
   banner.className = 'barcode-scan-banner';
-  banner.textContent = `Barcode scanned: ${barcode} — showing matched products below.`;
+  banner.classList.toggle('error', isError);
+  banner.textContent = message;
   searchSection.appendChild(banner);
 }
 
