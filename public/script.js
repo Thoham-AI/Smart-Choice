@@ -24,10 +24,8 @@ const LOCATION_CONSENT_MESSAGE =
 
 const BARCODE_NOT_FOUND_MESSAGE =
   'Barcode not found. Try typing the product name instead.';
-const BARCODE_IDENTIFY_ERROR_MESSAGE =
-  "Sorry, we couldn't identify this product's barcode. Please try typing its name.";
-const BARCODE_NOT_LISTED_MESSAGE =
-  "Sorry, this product is not listed online. Please try typing its general name (e.g., 'milk', 'bread').";
+const BARCODE_DATABASE_NOT_FOUND_MESSAGE =
+  'Barcode not found in database. Please type the product name.';
 
 /**
  * Coordinates forwarded on every API call (headers + query).
@@ -1309,12 +1307,22 @@ function handleBrandHomeClick(event) {
 }
 
 async function searchProducts() {
-  const keyword = document.getElementById('itemInput').value.trim();
-  if (!keyword) {
+  const searchTerm = document.getElementById('itemInput').value.trim();
+  if (!searchTerm) {
     return alert('Enter a product name (e.g. milk, rice 1kg).');
   }
+
+  // Nếu người dùng gõ barcode vào ô Search, không gửi số xuống scraper siêu thị.
+  if (isBarcodeSearchTerm(searchTerm)) {
+    return searchBarcodeViaOpenFoodFacts(searchTerm);
+  }
+
   await ensureLocationConsent();
-  await runCompareSearch({ keyword });
+  await runCompareSearch({ keyword: searchTerm });
+}
+
+function isBarcodeSearchTerm(searchTerm) {
+  return /^\d{12,14}$/.test(String(searchTerm || '').trim());
 }
 
 function barcodeLookupVariants(barcode) {
@@ -1374,11 +1382,10 @@ async function translateBarcodeToProductName(scannedCode) {
   return null;
 }
 
-/** Called after a successful barcode scan (from barcode-scanner.js) */
-async function searchByBarcode(barcode) {
+async function searchBarcodeViaOpenFoodFacts(barcode) {
   const digits = String(barcode).replace(/\D/g, '');
-  if (digits.length < 8) {
-    return alert('Invalid barcode. Try scanning again.');
+  if (!isBarcodeSearchTerm(digits)) {
+    return alert('Invalid barcode. Try a 12-14 digit barcode or type the product name.');
   }
 
   document.querySelector('.main-tab[data-tab="compare"]')?.click();
@@ -1386,45 +1393,37 @@ async function searchByBarcode(barcode) {
 
   try {
     setBarcodeLookupStatus('Scanning...');
-    await ensureLocationConsent();
 
     const offMatch = await translateBarcodeToProductName(digits);
 
-    if (offMatch?.productName) {
-      const { productName, matchedBarcode } = offMatch;
-      setBarcodeLookupStatus(`Found: ${productName}, comparing...`);
-      document.getElementById('itemInput').value = productName;
-
-      // Lớp 1 thành công: dùng tên sản phẩm để search Coles/Woolworths.
-      await runCompareSearch({
-        keyword: productName,
-        barcodeContext: { scannedBarcode: digits, matchedBarcode, productName },
-      });
+    if (!offMatch?.productName) {
+      // Không fallback sang search số ở siêu thị vì API fuzzy search trả kết quả rác.
+      setBarcodeLookupStatus(BARCODE_DATABASE_NOT_FOUND_MESSAGE, true);
+      setSearchResultsVisible(false);
       return;
     }
 
-    // Lớp 2: OFF không tìm thấy, thử tìm trực tiếp barcode như một text search term.
-    setBarcodeLookupStatus('Looking up in supermarket databases...');
-    document.getElementById('itemInput').value = digits;
-    const hasFallbackResults = await runCompareSearch({
-      keyword: digits,
-      barcodeContext: {
-        scannedBarcode: digits,
-        fallbackBarcodeSearch: true,
-        statusMessage: 'Looking up in supermarket databases...',
-      },
-    });
+    const { productName, matchedBarcode } = offMatch;
+    setBarcodeLookupStatus(`Found: ${productName}, comparing...`);
+    document.getElementById('itemInput').value = productName;
 
-    // Lớp 3: chỉ chốt lỗi khi fallback ở cả hai siêu thị không có matched result.
-    if (!hasFallbackResults) {
-      setBarcodeLookupStatus(BARCODE_NOT_LISTED_MESSAGE, true);
-      setSearchResultsVisible(false);
-    }
+    await ensureLocationConsent();
+
+    // Chỉ gửi keyword bằng chữ xuống backend để Coles/Woolworths search text an toàn.
+    await runCompareSearch({
+      keyword: productName,
+      barcodeContext: { scannedBarcode: digits, matchedBarcode, productName },
+    });
   } catch (error) {
-    const message = error?.message || BARCODE_NOT_LISTED_MESSAGE;
+    const message = error?.message || BARCODE_DATABASE_NOT_FOUND_MESSAGE;
     setBarcodeLookupStatus(message, true);
     setSearchResultsVisible(false);
   }
+}
+
+/** Called after a successful barcode scan (from barcode-scanner.js) */
+async function searchByBarcode(barcode) {
+  return searchBarcodeViaOpenFoodFacts(barcode);
 }
 
 window.searchByBarcode = searchByBarcode;
