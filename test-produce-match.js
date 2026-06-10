@@ -478,4 +478,59 @@ assert(
   'numeric search does not blindly pair first Woolworths and Coles hits'
 );
 
+// Generic short keywords should survive filtering/scoring even when product names are long.
+const toiletMatrix = buildAlignedCompareMatrix(
+  'toilet paper',
+  { keyword: 'toilet paper', quantity: 1, unit: 'each' },
+  [
+    {
+      name: 'Quilton Toilet Tissue 12pk',
+      price: 10,
+      supermarket: 'Woolworths',
+      categoryBucket: 'household',
+    },
+  ],
+  [
+    {
+      name: 'Coles Toilet Paper Soft 12 Rolls',
+      price: 9,
+      supermarket: 'Coles',
+      categoryBucket: 'household',
+    },
+  ]
+);
+assert(
+  toiletMatrix.matrixRows.some((row) => row.woolworths || row.coles),
+  'toilet paper generic search should show store results'
+);
+assert(
+  toiletMatrix.matrixRows.some((row) => /toilet tissue/i.test(row.woolworths?.name || '')),
+  'toilet paper should match toilet tissue synonym'
+);
+
+const eggsMatrix = buildAlignedCompareMatrix(
+  'eggs',
+  { keyword: 'eggs', quantity: 1, unit: 'each' },
+  [
+    {
+      name: 'Woolworths Free Range Egg 12 Pack',
+      price: 6,
+      supermarket: 'Woolworths',
+      categoryBucket: 'dairy',
+    },
+  ],
+  [
+    {
+      name: 'Coles Cage Free Eggs 12 Pack',
+      price: 5.8,
+      supermarket: 'Coles',
+      categoryBucket: 'dairy',
+    },
+  ]
+);
+assert(
+  eggsMatrix.matrixRows.some((row) => row.woolworths || row.coles),
+  'eggs generic search should show store results'
+);
+
 console.log('test-produce-match.js: all assertions passed');

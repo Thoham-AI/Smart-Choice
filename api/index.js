@@ -2980,7 +2980,6 @@ const NON_FOOD_DEPARTMENT_TERMS = [
   'personal care',
   'toiletries',
   'hygiene',
-  'household',
   'home care',
   'cleaning',
   'laundry',
@@ -3261,7 +3260,6 @@ function productInNonFoodDepartment(product, name) {
   );
   return (
     bucket === CATEGORY_BUCKETS.HEALTH_BEAUTY ||
-    bucket === CATEGORY_BUCKETS.HOUSEHOLD ||
     bucket === CATEGORY_BUCKETS.CONFECTIONERY
   );
 }
@@ -3396,17 +3394,88 @@ function getProductComparablePricePerKg(product) {
   return Number.POSITIVE_INFINITY;
 }
 
-/** Tên phải chứa ít nhất một từ khóa có nghĩa từ query (tránh match bừa). */
-function productNameContainsSearchKeywords(displayName, keyword, listItem = {}) {
+const GENERIC_SHORT_KEYWORD_IGNORE_WORDS = new Set([
+  'fresh',
+  'free',
+  'range',
+  'organic',
+  'the',
+  'and',
+  'for',
+]);
+
+const GENERIC_KEYWORD_SYNONYM_PHRASES = [
+  {
+    query: ['toilet', 'paper'],
+    alternatives: [
+      ['toilet', 'tissue'],
+      ['bathroom', 'tissue'],
+    ],
+  },
+];
+
+function getSignificantKeywordWords(keyword, listItem = {}) {
   const core = stripWeightFromText(keyword || listItem.keyword || '');
-  const words = normalizeNameForMatch(core)
+  return normalizeNameForMatch(core)
     .split(' ')
-    .filter((w) => w.length > 2 && !['fresh', 'free', 'range', 'organic'].includes(w));
+    .filter((w) => w.length > 2 && !GENERIC_SHORT_KEYWORD_IGNORE_WORDS.has(w));
+}
+
+function keywordWordMatchesName(nameNorm, word) {
+  if (haystackHasWord(nameNorm, word)) return true;
+
+  // Các từ khóa chung rất hay khác số ít/số nhiều: egg ↔ eggs.
+  if (word.endsWith('s') && word.length > 3 && haystackHasWord(nameNorm, word.slice(0, -1))) {
+    return true;
+  }
+  if (!word.endsWith('s') && haystackHasWord(nameNorm, `${word}s`)) {
+    return true;
+  }
+
+  return false;
+}
+
+function shortKeywordSynonymPhraseMatches(nameNorm, words) {
+  return GENERIC_KEYWORD_SYNONYM_PHRASES.some((entry) => {
+    const queryMatches =
+      entry.query.length === words.length &&
+      entry.query.every((word) => words.includes(word));
+    if (!queryMatches) return false;
+
+    return entry.alternatives.some((phrase) =>
+      phrase.every((word) => keywordWordMatchesName(nameNorm, word))
+    );
+  });
+}
+
+function productNameHasFullShortKeywordMatch(displayName, keyword, listItem = {}) {
+  const words = getSignificantKeywordWords(keyword, listItem);
+  if (!words.length || words.length > 3) return false;
+
+  const nameNorm = normalizeNameForMatch(displayName);
+  if (!nameNorm) return false;
+
+  return (
+    words.every((word) => keywordWordMatchesName(nameNorm, word)) ||
+    shortKeywordSynonymPhraseMatches(nameNorm, words)
+  );
+}
+
+function getListMatchThresholdForKeyword(keyword, listItem = {}) {
+  const wordCount = getSignificantKeywordWords(keyword, listItem).length;
+  return wordCount > 0 && wordCount <= 3 ? 0.22 : LIST_MATCH_THRESHOLD;
+}
+
+/** Tên phải chứa keyword đủ mạnh; generic ngắn được pass nếu match đủ từ/synonym. */
+function productNameContainsSearchKeywords(displayName, keyword, listItem = {}) {
+  if (productNameHasFullShortKeywordMatch(displayName, keyword, listItem)) return true;
+
+  const words = getSignificantKeywordWords(keyword, listItem);
 
   if (!words.length) return true;
 
   const nameNorm = normalizeNameForMatch(displayName);
-  return words.some((word) => haystackHasWord(nameNorm, word));
+  return words.some((word) => keywordWordMatchesName(nameNorm, word));
 }
 
 function scoreProductForMatching(product, keyword, listItem = {}) {
@@ -5125,13 +5194,30 @@ function scoreProductForKeyword(
 ) {
   const productRef = product || { name: productName };
   const displayName = productRef.name || productName;
+  const fullShortKeywordMatch = productNameHasFullShortKeywordMatch(
+    displayName,
+    keyword,
+    listItem
+  );
+
+  if (fullShortKeywordMatch && !isProduceSearchIntent(keyword, listItem)) {
+    const productNorm = normalizeNameForMatch(displayName);
+    const queryNorm = normalizeNameForMatch(stripWeightFromText(keyword));
+    const base = stringSimilarity.compareTwoStrings(productNorm, queryNorm);
+    return Math.max(base, 0.5);
+  }
 
   if (!isProductEligibleForSearchIntent(productRef, keyword, listItem)) return 0;
   if (nameSuggestsNonFreshProduceSnack(displayName)) return 0;
   if (nameSuggestsNonFoodProductTitle(displayName)) return 0;
   if (productInNonFoodDepartment(productRef, displayName)) return 0;
 
-  if (nameSuggestsProcessedNotCoreIngredient(displayName, keyword)) return 0;
+  if (
+    !fullShortKeywordMatch &&
+    nameSuggestsProcessedNotCoreIngredient(displayName, keyword)
+  ) {
+    return 0;
+  }
   if (!isFreshProduceCandidateForIntent(displayName, productRef, keyword, listItem)) return 0;
 
   const coreKeyword = stripWeightFromText(keyword);
@@ -5150,7 +5236,9 @@ function scoreProductForKeyword(
     productNameMatchesProduceKeyword(displayName, keyword) &&
     !nameSuggestsPackagedDrink(displayName);
 
-  if (!produceNameHit && !varietiesCompatible(displayName, query)) return 0;
+  if (!produceNameHit && !fullShortKeywordMatch && !varietiesCompatible(displayName, query)) {
+    return 0;
+  }
 
   const sizeStatus = checkSizeCompatibility(displayName, query);
   if (!produceNameHit && sizeStatus === 'conflict') return 0;
@@ -5160,6 +5248,12 @@ function scoreProductForKeyword(
   const words = queryNorm.split(' ').filter((w) => w.length > 2);
   for (const word of words) {
     if (productNorm.includes(word)) score += 0.04;
+  }
+
+  if (fullShortKeywordMatch) {
+    // Generic queries như "eggs", "milk", "toilet paper" thường có tên dài/brand.
+    // Nếu tên chứa đủ từ khóa (hoặc synonym như toilet tissue), cho điểm sàn để không bị rớt.
+    score = Math.max(score, 0.5);
   }
 
   if (isFreshFoodCategory(displayName) && isFreshFoodCategory(coreKeyword)) {
@@ -5239,7 +5333,7 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
     isFreshFoodCategory(best?.name) ||
     searchIntentSuggestsRawIngredient(keyword, listItem)
       ? FRESH_LIST_MATCH_THRESHOLD
-      : LIST_MATCH_THRESHOLD;
+      : getListMatchThresholdForKeyword(keyword, listItem);
 
   if (
     best &&
@@ -7896,6 +7990,8 @@ module.exports.__matchingTest__ = {
   isGenuineFreshProduceForIntent,
   productConflictsWithWholeProduceRequest,
   evaluatePairingGuardrails,
+  productNameHasFullShortKeywordMatch,
+  scoreProductForMatching,
   pickBestProductMatch,
   filterProductsForSearchIntent,
   filterSearchNoiseProducts,
