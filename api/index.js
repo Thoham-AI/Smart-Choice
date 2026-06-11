@@ -58,6 +58,8 @@ const API_MAX_RETRIES = 2;
 const COMPARE_API_TIMEOUT_MS = 24000;
 const COMPARE_API_MAX_RETRIES = 2;
 const COMPARE_ROUTE_MAX_MS = 55000;
+const AI_PARSE_TIMEOUT_MS = 12000;
+const AI_ANALYZE_ROUTE_MAX_MS = 65000;
 /** MongoDB: fail nhanh nếu Atlas/local không phản hồi (không chặn search). */
 const MONGO_CONNECT_TIMEOUT_MS = 2500;
 const API_CACHE_READ_TIMEOUT_MS = 5000;
@@ -138,9 +140,9 @@ const FRESH_PRODUCE_ALLOWED_DEPARTMENTS = [
   'Fresh',
 ];
 const FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE =
-  /health\s*(?:&|and)?\s*beauty|beauty|cosmetics?|baby|household/i;
+  /health\s*(?:&|and)?\s*beauty|beauty|cosmetics?|baby|household|pet|pets|animals?|sport|sports|fitness|gym/i;
 const FRESH_PRODUCE_NAME_EXCLUSION_RE =
-  /soap|juice|drink|aloe|arizona|pickled|mix|candy|pack|mask|sheet|cream|lotion|scrub|gel|shampoo|conditioner|skincare|wipes|essential oil/i;
+  /soap|juice|drink|aloe|arizona|pickled|mix|candy|pack|mask|sheet|cream|lotion|scrub|gel|shampoo|conditioner|skincare|wipes|essential oil|exercise|exerciser|gripper|strengthener|trainer|forearm|vest|weighted|strap|straps|shoulder|breathable|running|hiit|gym|iron sand|sausage|sausages|pork|beef|chicken|meat|cat|cats|dog|dogs|pet|pets|pipette|pipettes|revolution|flea|worm|tick/i;
 const FRESH_PRODUCE_REAL_UNIT_SIGNAL_RE =
   /\b(?:kg|whole|cut|half|quarter|each|pack of|per)\b/i;
 const FRESH_PRODUCE_PROCESSED_DRINK_RE =
@@ -3777,6 +3779,36 @@ function shouldApplyWeightScaling(product, listItem) {
   return true;
 }
 
+function estimateEachFruitWeightKg(product, listItem) {
+  const targetWeightKg = getTargetWeightKg(listItem);
+  if (targetWeightKg == null || !listItem?.is_fresh_produce) return null;
+  if (product?.pricePerKg != null || product?.packWeightKg != null) return null;
+  if (getPackWeightKgFromProduct(product?.name || '', product || {}) != null) return null;
+
+  const hay = normalizeNameForMatch(
+    `${listItem.clean_query || listItem.keyword || ''} ${product?.name || ''}`
+  );
+
+  const estimates = [
+    { re: /\b(apples?|royal gala|pink lady|granny smith)\b/, kg: 0.18 },
+    { re: /\b(oranges?|navel|naval|mandarin)\b/, kg: 0.25 },
+    { re: /\bbananas?\b/, kg: 0.18 },
+    { re: /\bpears?\b/, kg: 0.18 },
+    { re: /\blemons?\b/, kg: 0.12 },
+    { re: /\blimes?\b/, kg: 0.08 },
+    { re: /\bavocados?\b/, kg: 0.2 },
+    { re: /\bmango(?:es|s)?\b/, kg: 0.3 },
+    { re: /\bkiwi(?:fruit)?s?\b/, kg: 0.09 },
+  ];
+
+  const match = estimates.find((entry) => entry.re.test(hay));
+  if (!match) return null;
+
+  const nameNorm = normalizeNameForMatch(product?.name || '');
+  const looksEach = /\beach\b|\bea\b/.test(nameNorm) || !/\b\d+(?:\.\d+)?\s*(?:kg|g)\b/.test(nameNorm);
+  return looksEach ? match.kg : null;
+}
+
 function applyListItemPricing(product, listItem) {
   if (!product || !listItem) return product;
 
@@ -3798,6 +3830,8 @@ function applyListItemPricing(product, listItem) {
   let pricingNote = null;
   let isAdjustedPrice = false;
 
+  const estimatedEachKg = estimateEachFruitWeightKg(product, listItem);
+
   if (pricePerKg != null && targetWeightKg != null && shouldApplyWeightScaling(product, listItem)) {
     finalPrice = Number((pricePerKg * targetWeightKg).toFixed(2));
     isAdjustedPrice = true;
@@ -3806,6 +3840,15 @@ function applyListItemPricing(product, listItem) {
       unit === 'g' ? `${qty}g` : unit === 'kg' ? `${qty}kg` : `${targetWeightKg}kg`;
 
     pricingNote = `($${pricePerKg.toFixed(2)}/kg, converted for ${weightLabel})`;
+  } else if (
+    estimatedEachKg != null &&
+    targetWeightKg != null &&
+    shouldApplyWeightScaling(product, listItem)
+  ) {
+    const eachCount = Math.ceil(targetWeightKg / estimatedEachKg);
+    finalPrice = Number((packShelfPrice * eachCount).toFixed(2));
+    isAdjustedPrice = true;
+    pricingNote = `(Weight estimate: ${eachCount} × each @ $${packShelfPrice.toFixed(2)} (est. ${targetWeightKg}kg))`;
   } else if (['each', 'ea', 'bunch', 'pack', 'pk'].includes(unit)) {
     const frac = detectFractionalUnit(product.name);
 
@@ -6203,18 +6246,35 @@ function parseQuantityUnitFromOriginalText(originalText) {
   return { quantity: 1, unit: 'each' };
 }
 
+function textHasFreshProduceIntentKeyword(text) {
+  const norm = normalizeNameForMatch(stripWeightFromText(text));
+  if (!norm) return false;
+  return PRODUCE_INTENT_KEYWORDS.some((kw) => {
+    if (haystackHasWord(norm, kw)) return true;
+    if (!kw.endsWith('s') && haystackHasWord(norm, `${kw}s`)) return true;
+    return false;
+  });
+}
+
 function inferIsFreshProduceFromLine(row, originalText, cleanQuery) {
-  if (row?.is_fresh_produce === true) return true;
+  const combined = `${originalText} ${cleanQuery}`.toLowerCase();
+  const explicitlyProcessed =
+    /\b(juice|drink|pickled|canned|frozen meal|soap|sausage|sausages|pork|beef|chicken)\b/.test(
+      combined
+    );
+
+  if (row?.is_fresh_produce === true) return !explicitlyProcessed;
+
+  const deterministicFreshProduce = textHasFreshProduceIntentKeyword(cleanQuery || originalText);
+  if (deterministicFreshProduce && !explicitlyProcessed) return true;
   if (row?.is_fresh_produce === false) return false;
 
   const cat = String(row?.category || '').toLowerCase();
   if (/fruit|veg|produce/.test(cat)) return true;
 
-  const combined = `${originalText} ${cleanQuery}`.toLowerCase();
-  if (/\b(juice|drink|pickled|canned|frozen meal|soap)\b/.test(combined)) return false;
+  if (explicitlyProcessed) return false;
 
-  const norm = normalizeNameForMatch(stripWeightFromText(cleanQuery));
-  return PRODUCE_INTENT_KEYWORDS.some((kw) => haystackHasWord(norm, kw));
+  return textHasFreshProduceIntentKeyword(cleanQuery);
 }
 
 /** Map OpenAI / fallback row → internal list item (qty derived from original_text). */
@@ -6232,6 +6292,9 @@ function normalizeParsedLineItem(row, fallbackOriginal = '') {
   if (!clean_query && original_text) {
     clean_query = stripWeightFromText(original_text).replace(/^fresh\s+/i, '').trim();
   }
+  clean_query = clean_query.replace(/\bnaval\s+oranges?\b/i, (match) =>
+    /oranges$/i.test(match) ? 'navel oranges' : 'navel orange'
+  );
   if (!clean_query && !original_text) return null;
 
   const is_fresh_produce = inferIsFreshProduceFromLine(row, original_text, clean_query);
@@ -7725,18 +7788,21 @@ app.post('/api/analyze-prompt', async (req, res) => {
   let parsedItems;
   let parseSource = 'openai';
 
-  try {
-    if (openaiClient) {
-      parsedItems = await parseShoppingListWithAI(prompt);
-    } else {
+  if (openaiClient) {
+    try {
+      parsedItems = await withTimeout(
+        parseShoppingListWithAI(prompt),
+        AI_PARSE_TIMEOUT_MS,
+        'OpenAI shopping list parse'
+      );
+    } catch (error) {
+      console.warn(`  ⚠ OpenAI parse failed, using local parser: ${error.message}`);
       parseSource = 'fallback';
       parsedItems = parseShoppingListFallback(prompt);
     }
-  } catch (error) {
-    console.error('  ❌ Parse error:', error.message);
-    return res.status(502).json({
-      error: error.message || 'Could not parse shopping list.',
-    });
+  } else {
+    parseSource = 'fallback';
+    parsedItems = parseShoppingListFallback(prompt);
   }
 
   if (!parsedItems.length) {
@@ -7747,10 +7813,25 @@ app.post('/api/analyze-prompt', async (req, res) => {
 
   console.log(`  📋 ${parsedItems.length} items (${parseSource})`);
 
-  // Gọi song song tất cả món – mỗi món lại gọi song song Coles + Woolworths
-  const lineResults = await Promise.all(
-    parsedItems.map((item) => resolveListItem(item))
-  );
+  let lineResults;
+  try {
+    // Gọi song song tất cả món – mỗi món lại gọi song song Coles + Woolworths
+    lineResults = await withTimeout(
+      Promise.all(parsedItems.map((item) => resolveListItem(item))),
+      AI_ANALYZE_ROUTE_MAX_MS,
+      'AI shopping list product matching'
+    );
+  } catch (error) {
+    console.error('  ❌ AI analysis timeout/error:', error.message);
+    return res.status(504).json({
+      error:
+        'AI Analyzer took too long while fetching supermarket prices. Try a shorter list or run it again.',
+      parseSource,
+      parsedItems,
+      lineItems: [],
+      optimization: null,
+    });
+  }
 
   const optimization = buildCartOptimization(lineResults);
 
@@ -7992,6 +8073,8 @@ module.exports.__matchingTest__ = {
   evaluatePairingGuardrails,
   productNameHasFullShortKeywordMatch,
   scoreProductForMatching,
+  applyListItemPricing,
+  estimateEachFruitWeightKg,
   pickBestProductMatch,
   filterProductsForSearchIntent,
   filterSearchNoiseProducts,

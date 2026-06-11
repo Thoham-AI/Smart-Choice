@@ -1,7 +1,7 @@
 /**
  * ShoppingSmart — Service Worker (basic offline shell caching)
  */
-const CACHE_NAME = 'shoppingsmart-pwa-v1';
+const CACHE_NAME = 'shoppingsmart-pwa-v2';
 
 /** Core assets cached on install (versioned ?v= files are cached on first visit) */
 const PRECACHE_URLS = [

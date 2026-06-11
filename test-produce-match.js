@@ -32,6 +32,7 @@ const {
   buildMongoProductQueryFilters,
   freshProduceRankingScoreOverride,
   buildAlignedCompareMatrix,
+  applyListItemPricing,
 } = __matchingTest__;
 
 function assert(cond, msg) {
@@ -451,6 +452,85 @@ assert(
     /cucumber/i.test(filteredCucumber[0].name) &&
     !/juice|soap|pickled/i.test(filteredCucumber[0].name),
   'mongo filter keeps only genuine fresh cucumber'
+);
+
+// AI may incorrectly set is_fresh_produce=false; backend must override obvious fruit intents.
+const parsedOrange = normalizeParsedLineItem({
+  original_text: 'orange (5 kg)',
+  clean_query: 'orange',
+  is_fresh_produce: false,
+  category: 'Grocery',
+});
+assert(parsedOrange.is_fresh_produce === true, 'orange parse forced to fresh produce');
+
+const parsedApples = normalizeParsedLineItem({
+  original_text: 'royal gala apples (3 kg)',
+  clean_query: 'royal gala apples',
+  is_fresh_produce: false,
+  category: 'Grocery',
+});
+assert(parsedApples.is_fresh_produce === true, 'royal gala apples parse forced to fresh produce');
+
+const woolOrangeGripper = {
+  name: 'Adjustable Power Hand Grip Forearm Exerciser Gripper Strengthener Trainer 5-60Kg Orange',
+  categoryBucket: 'household',
+  categoryPath: 'Sports & Fitness',
+};
+const woolOrangeVest = {
+  name: 'Adwin Weighted Vest 5kg with Upgraded Iron Sand, Reflective Strips & Breathable Shoulder Straps for Gym, Running, HIIT, Orange',
+  categoryBucket: 'household',
+  categoryPath: 'Sports & Fitness',
+};
+const woolAppleSausage = {
+  name: 'Woolworths 6 Gourmet Pork Sausages Royal Gala Apples 500g',
+  categoryBucket: 'meat_seafood',
+  categoryPath: 'Meat / Sausages',
+};
+assert(
+  !productMatchesParsedLineMongoFilters(woolOrangeGripper, parsedOrange),
+  'orange fresh produce must reject orange exercise gripper'
+);
+assert(
+  !productMatchesParsedLineMongoFilters(woolOrangeVest, parsedOrange),
+  'orange fresh produce must reject orange weighted vest'
+);
+
+const parsedNavalOrange = normalizeParsedLineItem({
+  original_text: 'naval orange (5 kg)',
+  clean_query: 'naval orange',
+  is_fresh_produce: false,
+  category: 'Grocery',
+});
+assert(parsedNavalOrange.clean_query === 'navel orange', 'naval orange typo normalized');
+assert(parsedNavalOrange.is_fresh_produce === true, 'navel orange parse forced to fresh produce');
+
+const woolPetOrange = {
+  name: 'Revolution Plus for Medium Cats 2.5 to 5 Kg (Orange) 6 Pipettes',
+  categoryBucket: 'health_beauty',
+  categoryPath: 'Pet / Cats / Flea & Worm Treatment',
+};
+assert(
+  !productMatchesParsedLineMongoFilters(woolPetOrange, parsedNavalOrange),
+  'navel orange fresh produce must reject pet medicine orange pack'
+);
+assert(
+  !productMatchesParsedLineMongoFilters(woolAppleSausage, parsedApples),
+  'royal gala apples fresh produce must reject pork sausage'
+);
+
+const pricedAppleEach = applyListItemPricing(
+  {
+    name: 'Apple Royal Gala each',
+    price: 1.2,
+    packShelfPrice: 1.2,
+    categoryBucket: 'fruit_veg',
+  },
+  parsedApples
+);
+assert(pricedAppleEach.price > 1.2, 'apple each should estimate kg request, not one fruit');
+assert(
+  /Weight estimate/i.test(pricedAppleEach.pricingNote || ''),
+  'apple each kg estimate should show pricing note'
 );
 
 // Numeric barcode-like searches must not bypass similarity/text filters anymore.

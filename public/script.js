@@ -371,6 +371,7 @@ let compareSearchAbortController = null;
 
 const COMPARE_FETCH_TIMEOUT_MS = 42000;
 const BARCODE_FETCH_TIMEOUT_MS = 55000;
+const AI_ANALYZE_FETCH_TIMEOUT_MS = 75000;
 
 /**
  * fetch() wrapper: always forwards the latest known coordinates to the backend.
@@ -396,6 +397,16 @@ async function apiFetchCompare(url, options = {}) {
 
   try {
     return await apiFetch(url, { signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function apiFetchWithTimeout(url, options = {}, timeoutMs = COMPARE_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await apiFetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeoutId);
   }
@@ -1758,7 +1769,7 @@ function renderSummaryFromAlignedKeywordBlocks(el, section, keywordBlocks, data 
     const cmp = compareStoresForCheaper(peers);
     const minPack = Math.min(...peers.map((p) => p.price));
     if (cmp.cheaperStore === 'tie' || !cmp.cheaperStore) {
-      text += `<strong>${escapeHtml(block.keyword)}</strong>: same lowest price on top row (from <strong>$${minPack.toFixed(2)}</strong>). `;
+      text += `<strong>${escapeHtml(block.keyword)}</strong>: same lower price on top row (from <strong>$${minPack.toFixed(2)}</strong>). `;
     } else {
       text += `<strong>${escapeHtml(block.keyword)}</strong>: ${cmp.cheaperStore} from <strong>$${minPack.toFixed(2)}</strong>`;
       if (cmp.saving > 0) {
@@ -1999,7 +2010,7 @@ function refreshMatrixRowPriceBadges(rowEl) {
     if (!cheapestLabel && meta) {
       cheapestLabel = document.createElement('p');
       cheapestLabel.className = 'cheapest-label';
-      cheapestLabel.textContent = 'Lowest price';
+      cheapestLabel.textContent = 'Lower price';
       meta.insertBefore(cheapestLabel, meta.firstChild);
     }
     if (cheapestLabel) {
@@ -2059,7 +2070,7 @@ function buildAlignedMatrixCellHtml(
         </div>
       </div>
       <div class="aligned-cell-meta">
-        ${isCheapest && rowPeers.length >= 2 ? '<p class="cheapest-label">Lowest price</p>' : ''}
+        ${isCheapest && rowPeers.length >= 2 ? '<p class="cheapest-label">Lower price</p>' : ''}
         ${buildProductCardChartSection()}
         <button type="button" class="select-btn aligned-add-btn" data-store="${escapeHtml(storeKey)}">Add to list</button>
       </div>
@@ -2111,7 +2122,7 @@ function renderSummary(el, section, woolworths, coles, data = {}) {
     const runner = sorted[1];
     const diff = runner.price - best.price;
     if (diff <= PRICE_EPSILON) {
-      text += '✨ Same lowest price across stores (within rounding).';
+      text += '✨ Same lower price across stores (within rounding).';
     } else {
       text += `👀 ${best.store} looks best here — save <strong>$${diff.toFixed(2)}</strong> vs ${runner.store} on the cheapest match.`;
     }
@@ -2151,7 +2162,7 @@ function renderStoreResults(container, products, storeName, storeError = '') {
       ${buildLinkedImage(item, 'product-thumb')}
       ${buildProductTitleRow(item)}
       ${priceBlock}
-      ${isCheapest ? '<p class="cheapest-label">Lowest price</p>' : ''}
+      ${isCheapest ? '<p class="cheapest-label">Lower price</p>' : ''}
       ${buildProductCardChartSection()}
       <button class="select-btn" type="button">Add to list</button>
     `;
@@ -2710,11 +2721,15 @@ async function analyzeShoppingList() {
   section.querySelector('#ai-line-items').innerHTML = '';
 
   try {
-    const response = await apiFetch(`${API_BASE}/api/analyze-prompt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
-    });
+    const response = await apiFetchWithTimeout(
+      `${API_BASE}/api/analyze-prompt`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      },
+      AI_ANALYZE_FETCH_TIMEOUT_MS
+    );
     const data = await response.json();
 
     if (!response.ok) {
@@ -2725,7 +2740,11 @@ async function analyzeShoppingList() {
     finishAiAnalyzeProgress();
   } catch (err) {
     stopAiAnalyzeProgress(true);
-    section.querySelector('#ai-parse-info').innerHTML = `<p class="error">${escapeHtml(err.message || 'Analysis failed.')}</p>`;
+    const message =
+      err.name === 'AbortError'
+        ? 'AI Analyzer timed out while fetching prices. Try a shorter list or run it again.'
+        : err.message || 'Analysis failed.';
+    section.querySelector('#ai-parse-info').innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
   } finally {
     btn.disabled = false;
   }
