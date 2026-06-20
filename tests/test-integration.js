@@ -1,4 +1,4 @@
-const { searchBoth, closeBrowser } = require('./fetcher');
+const { searchBoth, closeBrowser } = require('../fetcher');
 
 (async () => {
   const result = await searchBoth('milk', 5);

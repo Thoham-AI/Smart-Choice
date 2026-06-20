@@ -18,9 +18,7 @@ app.get('/search', async (req, res) => {
 
   try {
     const result = await searchBoth(query);
-    console.log(
-      `✅ Woolworths: ${result.woolworths.length}, Coles: ${result.coles.length}`
-    );
+    console.log(`✅ Woolworths: ${result.woolworths.length}, Coles: ${result.coles.length}`);
     res.json(result);
   } catch (error) {
     console.error('❌ Search failed:', error.message);

@@ -1,18 +1,21 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- PWA / mobile install -->
-    <meta name="theme-color" content="#3b82f6">
-    <meta name="description" content="Compare grocery prices at Coles and Woolworths in real time.">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="apple-mobile-web-app-title" content="ShoppingSmart">
-    <link rel="manifest" href="/manifest.json">
-    <link rel="icon" href="/icons/icon-192x192.png" sizes="192x192" type="image/png">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <meta name="theme-color" content="#3b82f6" />
+    <meta
+      name="description"
+      content="Compare grocery prices at Coles and Woolworths in real time."
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ShoppingSmart" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icons/icon-192x192.png" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!-- Google tag (gtag.js) — GA4, production hosts only -->
     <script>
       (function () {
@@ -23,7 +26,9 @@
         gtagScript.src = 'https://www.googletagmanager.com/gtag/js?id=G-HGMLRXYFHK';
         document.head.appendChild(gtagScript);
         window.dataLayer = window.dataLayer || [];
-        function gtag() { dataLayer.push(arguments); }
+        function gtag() {
+          dataLayer.push(arguments);
+        }
         window.gtag = gtag;
         gtag('js', new Date());
         gtag('config', 'G-HGMLRXYFHK');
@@ -33,384 +38,460 @@
     <script>
       (function () {
         var t = localStorage.getItem('shoppingsmart_theme');
-        var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        var dark =
+          t === 'dark' ||
+          (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=26">
-</head>
-<body>
+    <link rel="stylesheet" href="style.css?v=26" />
+  </head>
+  <body>
     <div class="app-container">
-        <header class="site-navbar" role="banner">
-            <a
-                href="/"
-                class="brand-logo-link"
-                id="brand-home-link"
-                aria-label="ShoppingSmart home — reset search"
-            >
-                <img
-                    src="/shoppingsmart-logo.svg?v=2"
-                    alt="ShoppingSmart Logo"
-                    class="brand-logo brand-logo--nav"
-                    width="40"
-                    height="40"
-                    decoding="async"
-                />
-                <!-- 1. Tên thương hiệu: ShoppingSmart (không còn SmartChoice) -->
-                <span class="brand-logo-text">ShoppingSmart</span>
-            </a>
-            <!-- Góc phải header: Góp ý (Tally) + dark mode -->
-            <div class="site-navbar-actions">
-                <a
-                    href="https://tally.so/r/lbzBAp"
-                    id="navbar-feedback-link"
-                    class="navbar-feedback-link"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="Send feedback — opens in a new tab"
-                    title="Feedback"
-                >
-                    <span class="navbar-feedback-icon" aria-hidden="true">💬</span>
-                    <span class="navbar-feedback-label">Feedback</span>
-                </a>
-                <button
-                    type="button"
-                    id="theme-toggle"
-                    class="theme-toggle"
-                    aria-label="Toggle dark mode"
-                    title="Toggle dark mode"
-                >
-                    <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
-                    <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
-                </button>
-            </div>
-        </header>
+      <header class="site-navbar" role="banner">
+        <a
+          href="/"
+          class="brand-logo-link"
+          id="brand-home-link"
+          aria-label="ShoppingSmart home — reset search"
+        >
+          <img
+            src="/shoppingsmart-logo.svg?v=2"
+            alt="ShoppingSmart Logo"
+            class="brand-logo brand-logo--nav"
+            width="40"
+            height="40"
+            decoding="async"
+          />
+          <!-- 1. Tên thương hiệu: ShoppingSmart (không còn SmartChoice) -->
+          <span class="brand-logo-text">ShoppingSmart</span>
+        </a>
+        <!-- Góc phải header: Góp ý (Tally) + dark mode -->
+        <div class="site-navbar-actions">
+          <a
+            href="https://tally.so/r/lbzBAp"
+            id="navbar-feedback-link"
+            class="navbar-feedback-link"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Send feedback — opens in a new tab"
+            title="Feedback"
+          >
+            <span class="navbar-feedback-icon" aria-hidden="true">💬</span>
+            <span class="navbar-feedback-label">Feedback</span>
+          </a>
+          <button
+            type="button"
+            id="theme-toggle"
+            class="theme-toggle"
+            aria-label="Toggle dark mode"
+            title="Toggle dark mode"
+          >
+            <span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span>
+            <span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span>
+          </button>
+        </div>
+      </header>
 
-        <p class="site-tagline">Real-time grocery price comparison</p>
+      <p class="site-tagline">Real-time grocery price comparison</p>
 
-        <nav class="main-tabs" aria-label="Main navigation">
-            <button type="button" class="main-tab active" data-tab="compare">Compare Prices</button>
-            <button type="button" class="main-tab" data-tab="watchlist">
-                Price Watchlist
-                <span id="watchlist-tab-badge" class="tab-badge hidden">0</span>
-            </button>
-        </nav>
+      <nav class="main-tabs" aria-label="Main navigation">
+        <button type="button" class="main-tab active" data-tab="compare">Compare Prices</button>
+        <button type="button" class="main-tab" data-tab="watchlist">
+          Price Watchlist
+          <span id="watchlist-tab-badge" class="tab-badge hidden">0</span>
+        </button>
+      </nav>
 
-        <div id="panel-compare" class="tab-panel active">
-
+      <div id="panel-compare" class="tab-panel active">
         <section class="search-section" id="search-section">
-            <!-- 4. Logo hero — bg-transparent, SVG nền trong suốt (không khối trắng) -->
-            <a
-                href="/"
-                class="brand-hero-link bg-transparent"
-                id="brand-hero-link"
-                aria-label="ShoppingSmart"
-            >
-                <img
-                    src="/shoppingsmart-logo.svg?v=2"
-                    alt="ShoppingSmart Logo"
-                    class="brand-logo brand-logo--hero"
-                    width="180"
-                    height="99"
-                    decoding="async"
-                />
-            </a>
-            <div class="search-bar">
-                <input
-                    type="text"
-                    id="itemInput"
-                    placeholder="Search for 'Jasmine rice', 'oyster blade beefsteak'..."
-                    data-rotating-placeholder="true"
-                >
-                <div class="search-bar-actions">
-                    <!-- 2. Nút tìm kiếm: Search (không lặp "Compare Prices" với tab) -->
-                    <button type="button" onclick="searchProducts()" id="searchBtn">🔍 Search</button>
-                    <!-- Barcode: icon máy ảnh + chữ cạnh bên -->
-                    <button
-                        type="button"
-                        id="scannerBtn"
-                        class="scanner-open-btn"
-                        title="Barcode scan"
-                        aria-label="Barcode scan"
-                    >
-                        <span class="scanner-open-icon" aria-hidden="true">📷</span>
-                        <span class="scanner-open-label">barcode scan</span>
-                    </button>
-                </div>
+          <!-- 4. Logo hero — bg-transparent, SVG nền trong suốt (không khối trắng) -->
+          <a
+            href="/"
+            class="brand-hero-link bg-transparent"
+            id="brand-hero-link"
+            aria-label="ShoppingSmart"
+          >
+            <img
+              src="/shoppingsmart-logo.svg?v=2"
+              alt="ShoppingSmart Logo"
+              class="brand-logo brand-logo--hero"
+              width="180"
+              height="99"
+              decoding="async"
+            />
+          </a>
+          <div class="search-bar">
+            <input
+              type="text"
+              id="itemInput"
+              placeholder="Search for 'Jasmine rice', 'oyster blade beefsteak'..."
+              data-rotating-placeholder="true"
+            />
+            <div class="search-bar-actions">
+              <!-- 2. Nút tìm kiếm: Search (không lặp "Compare Prices" với tab) -->
+              <button type="button" onclick="searchProducts()" id="searchBtn">🔍 Search</button>
+              <!-- Barcode: icon máy ảnh + chữ cạnh bên -->
+              <button
+                type="button"
+                id="scannerBtn"
+                class="scanner-open-btn"
+                title="Barcode scan"
+                aria-label="Barcode scan"
+              >
+                <span class="scanner-open-icon" aria-hidden="true">📷</span>
+                <span class="scanner-open-label">barcode scan</span>
+              </button>
             </div>
-            <section id="recent-searches-section" class="recent-searches hidden" aria-label="Recent searches">
-                <div class="recent-searches-header">
-                    <h3 class="recent-searches-title">Recent searches</h3>
-                    <button
-                        type="button"
-                        id="clear-history-btn"
-                        class="clear-history-btn"
-                        title="Clear search history"
-                        aria-label="Clear search history"
-                    >✕ Clear</button>
-                </div>
-                <div id="recent-searches-tags" class="recent-searches-tags"></div>
-            </section>
+          </div>
+          <section
+            id="recent-searches-section"
+            class="recent-searches hidden"
+            aria-label="Recent searches"
+          >
+            <div class="recent-searches-header">
+              <h3 class="recent-searches-title">Recent searches</h3>
+              <button
+                type="button"
+                id="clear-history-btn"
+                class="clear-history-btn"
+                title="Clear search history"
+                aria-label="Clear search history"
+              >
+                ✕ Clear
+              </button>
+            </div>
+            <div id="recent-searches-tags" class="recent-searches-tags"></div>
+          </section>
         </section>
 
         <!-- Location consent popup — shown on first search, not on page load -->
         <div
-            id="location-consent-modal"
-            class="location-modal hidden"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="location-notice-heading"
-            aria-live="polite"
+          id="location-consent-modal"
+          class="location-modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="location-notice-heading"
+          aria-live="polite"
         >
-            <div class="location-modal-backdrop" id="location-modal-backdrop"></div>
-            <div class="location-modal-content">
-                <span class="location-notice-icon" aria-hidden="true">📍</span>
-                <div class="location-notice-body">
-                    <p id="location-notice-heading" class="location-notice-heading">Local store prices</p>
-                    <p id="location-notice-text" class="location-notice-text">
-                        Agree to share your location so we can update prices at the supermarkets nearest to you.
-                    </p>
-                    <div class="location-postcode-row">
-                        <label class="location-postcode-label" for="location-postcode-input">Or enter postcode</label>
-                        <div class="location-postcode-fields">
-                            <input
-                                type="text"
-                                id="location-postcode-input"
-                                class="location-postcode-input"
-                                inputmode="numeric"
-                                pattern="[0-9]{4}"
-                                maxlength="4"
-                                placeholder="e.g. 0870"
-                                autocomplete="postal-code"
-                            />
-                            <select id="location-state-select" class="location-state-select" aria-label="State">
-                                <option value="">State (optional)</option>
-                                <option value="NSW">NSW</option>
-                                <option value="VIC">VIC</option>
-                                <option value="QLD">QLD</option>
-                                <option value="SA">SA</option>
-                                <option value="WA">WA</option>
-                                <option value="TAS">TAS</option>
-                                <option value="NT">NT</option>
-                                <option value="ACT">ACT</option>
-                            </select>
-                            <button type="button" id="location-postcode-btn" class="location-btn location-btn--ghost">
-                                Use postcode
-                            </button>
-                        </div>
-                    </div>
-                    <div id="location-consent-actions" class="location-consent-actions">
-                        <button
-                            type="button"
-                            id="location-allow-btn"
-                            class="location-btn location-btn--primary"
-                        >
-                            Share location
-                        </button>
-                        <button
-                            type="button"
-                            id="location-decline-btn"
-                            class="location-btn location-btn--ghost"
-                        >
-                            Not now
-                        </button>
-                    </div>
+          <div class="location-modal-backdrop" id="location-modal-backdrop"></div>
+          <div class="location-modal-content">
+            <span class="location-notice-icon" aria-hidden="true">📍</span>
+            <div class="location-notice-body">
+              <p id="location-notice-heading" class="location-notice-heading">Local store prices</p>
+              <p id="location-notice-text" class="location-notice-text">
+                Agree to share your location so we can update prices at the supermarkets nearest to
+                you.
+              </p>
+              <div class="location-postcode-row">
+                <label class="location-postcode-label" for="location-postcode-input"
+                  >Or enter postcode</label
+                >
+                <div class="location-postcode-fields">
+                  <input
+                    type="text"
+                    id="location-postcode-input"
+                    class="location-postcode-input"
+                    inputmode="numeric"
+                    pattern="[0-9]{4}"
+                    maxlength="4"
+                    placeholder="e.g. 0870"
+                    autocomplete="postal-code"
+                  />
+                  <select
+                    id="location-state-select"
+                    class="location-state-select"
+                    aria-label="State"
+                  >
+                    <option value="">State (optional)</option>
+                    <option value="NSW">NSW</option>
+                    <option value="VIC">VIC</option>
+                    <option value="QLD">QLD</option>
+                    <option value="SA">SA</option>
+                    <option value="WA">WA</option>
+                    <option value="TAS">TAS</option>
+                    <option value="NT">NT</option>
+                    <option value="ACT">ACT</option>
+                  </select>
+                  <button
+                    type="button"
+                    id="location-postcode-btn"
+                    class="location-btn location-btn--ghost"
+                  >
+                    Use postcode
+                  </button>
                 </div>
+              </div>
+              <div id="location-consent-actions" class="location-consent-actions">
+                <button
+                  type="button"
+                  id="location-allow-btn"
+                  class="location-btn location-btn--primary"
+                >
+                  Share location
+                </button>
+                <button
+                  type="button"
+                  id="location-decline-btn"
+                  class="location-btn location-btn--ghost"
+                >
+                  Not now
+                </button>
+              </div>
             </div>
+          </div>
         </div>
 
-        <div id="barcode-scanner-modal" class="scanner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="scanner-modal-title">
-            <div class="scanner-modal-backdrop" id="scanner-backdrop"></div>
-            <div class="scanner-modal-content">
-                <header class="scanner-modal-header">
-                    <h3 id="scanner-modal-title">Scan barcode</h3>
-                    <button type="button" id="scanner-close-btn" class="scanner-close-btn" aria-label="Close scanner">✕</button>
-                </header>
-                <div id="barcode-reader" class="barcode-reader"></div>
-                <p id="scanner-status" class="scanner-status">Point your camera at the product barcode</p>
-            </div>
+        <div
+          id="barcode-scanner-modal"
+          class="scanner-modal hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="scanner-modal-title"
+        >
+          <div class="scanner-modal-backdrop" id="scanner-backdrop"></div>
+          <div class="scanner-modal-content">
+            <header class="scanner-modal-header">
+              <h3 id="scanner-modal-title">Scan barcode</h3>
+              <button
+                type="button"
+                id="scanner-close-btn"
+                class="scanner-close-btn"
+                aria-label="Close scanner"
+              >
+                ✕
+              </button>
+            </header>
+            <div id="barcode-reader" class="barcode-reader"></div>
+            <p id="scanner-status" class="scanner-status">
+              Point your camera at the product barcode
+            </p>
+          </div>
         </div>
 
         <section class="ai-list-section">
-            <div class="ai-list-header">
-                <h2>AI Shopping List</h2>
-                <p class="ai-list-hint">Paste a list — we find the best split across Coles and Woolworths.</p>
-            </div>
-            <div class="ai-list-row">
-                <textarea
-                    id="aiListInput"
-                    class="ai-list-textarea"
-                    rows="2"
-                    placeholder="Enter specific items (e.g., 'Jasmine rice 5kg', 'free range eggs 12pk') for precise matching..."
-                ></textarea>
-                <button type="button" id="analyzeListBtn" class="analyze-list-btn">Analyze List by AI</button>
-            </div>
-            <p class="ai-list-disclaimer">
-                *Prices are indicative and optimized by AI. Please verify directly with retailers before purchasing.
-                See our <a href="/terms" class="inline-legal-link">Disclaimer</a>.
+          <div class="ai-list-header">
+            <h2>AI Shopping List</h2>
+            <p class="ai-list-hint">
+              Paste a list — we find the best split across Coles and Woolworths.
             </p>
-            <div
-                id="ai-analyze-progress"
-                class="ai-analyze-progress hidden"
-                role="progressbar"
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuenow="0"
-                aria-label="Analyzing shopping list"
-            >
-                <div class="ai-analyze-progress-track">
-                    <div id="ai-analyze-progress-fill" class="ai-analyze-progress-fill"></div>
-                </div>
-                <span id="ai-analyze-progress-label" class="ai-analyze-progress-label">0%</span>
+          </div>
+          <div class="ai-list-row">
+            <textarea
+              id="aiListInput"
+              class="ai-list-textarea"
+              rows="2"
+              placeholder="Enter specific items (e.g., 'Jasmine rice 5kg', 'free range eggs 12pk') for precise matching..."
+            ></textarea>
+            <button type="button" id="analyzeListBtn" class="analyze-list-btn">
+              Analyze List by AI
+            </button>
+          </div>
+          <p class="ai-list-disclaimer">
+            *Prices are indicative and optimized by AI. Please verify directly with retailers before
+            purchasing. See our <a href="/terms" class="inline-legal-link">Disclaimer</a>.
+          </p>
+          <div
+            id="ai-analyze-progress"
+            class="ai-analyze-progress hidden"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+            aria-label="Analyzing shopping list"
+          >
+            <div class="ai-analyze-progress-track">
+              <div id="ai-analyze-progress-fill" class="ai-analyze-progress-fill"></div>
             </div>
+            <span id="ai-analyze-progress-label" class="ai-analyze-progress-label">0%</span>
+          </div>
         </section>
 
-        <section id="ai-results-section" class="ai-results-section hidden" aria-label="AI shopping list results">
+        <section
+          id="ai-results-section"
+          class="ai-results-section hidden"
+          aria-label="AI shopping list results"
+        >
+          <button
+            type="button"
+            id="ai-results-collapse-bar"
+            class="ai-accordion-bar ai-collapse-bar hidden"
+            aria-expanded="true"
+            aria-controls="ai-results-body"
+          >
+            ▲ Collapse AI cart breakdown
+          </button>
+          <button
+            type="button"
+            id="ai-results-expand-bar"
+            class="ai-accordion-bar ai-expand-bar hidden"
+            aria-expanded="false"
+            aria-controls="ai-results-body"
+          >
+            📜 View previous AI list analysis (click to expand)
+          </button>
+          <div id="ai-results-body" class="ai-results-body">
+            <h2>Smart cart breakdown</h2>
             <button
-                type="button"
-                id="ai-results-collapse-bar"
-                class="ai-accordion-bar ai-collapse-bar hidden"
-                aria-expanded="true"
-                aria-controls="ai-results-body"
+              type="button"
+              id="export-ai-pdf-btn"
+              class="export-pdf-btn export-pdf-btn--ai"
+              title="Download your AI shopping list as PDF (free Beta)"
             >
-                ▲ Collapse AI cart breakdown
+              Export shopping list (PDF)
             </button>
-            <button
-                type="button"
-                id="ai-results-expand-bar"
-                class="ai-accordion-bar ai-expand-bar hidden"
-                aria-expanded="false"
-                aria-controls="ai-results-body"
-            >
-                📜 View previous AI list analysis (click to expand)
-            </button>
-            <div id="ai-results-body" class="ai-results-body">
-                <h2>Smart cart breakdown</h2>
-                <button
-                    type="button"
-                    id="export-ai-pdf-btn"
-                    class="export-pdf-btn export-pdf-btn--ai"
-                    title="Download your AI shopping list as PDF (free Beta)"
-                >
-                    Export shopping list (PDF)
-                </button>
-                <div id="ai-parse-info" class="ai-parse-info"></div>
-                <div id="ai-totals-grid" class="ai-totals-grid"></div>
-                <p id="ai-savings-banner" class="ai-savings-banner"></p>
-                <div id="ai-split-details" class="ai-split-details"></div>
-                <div id="ai-line-items" class="ai-line-items"></div>
-            </div>
+            <div id="ai-parse-info" class="ai-parse-info"></div>
+            <div id="ai-totals-grid" class="ai-totals-grid"></div>
+            <p id="ai-savings-banner" class="ai-savings-banner"></p>
+            <div id="ai-split-details" class="ai-split-details"></div>
+            <div id="ai-line-items" class="ai-line-items"></div>
+          </div>
         </section>
 
         <section id="summary-section" class="summary-section hidden">
-            <h2>Price summary</h2>
-            <p id="summary-text"></p>
+          <h2>Price summary</h2>
+          <p id="summary-text"></p>
         </section>
 
-        <div id="nearest-store-banner" class="nearest-store-banner hidden" role="status" aria-live="polite">
-            <span class="nearest-store-banner-icon" aria-hidden="true">🏪</span>
-            <p id="nearest-store-banner-text" class="nearest-store-banner-text"></p>
+        <div
+          id="nearest-store-banner"
+          class="nearest-store-banner hidden"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="nearest-store-banner-icon" aria-hidden="true">🏪</span>
+          <p id="nearest-store-banner-text" class="nearest-store-banner-text"></p>
         </div>
 
         <section id="aligned-compare-section" class="aligned-compare-section hidden">
-            <h2>Compare by item</h2>
-            <p class="aligned-compare-hint">Each row pairs Woolworths and Coles products in the most relevant order. A dashed box means that supermarket has no matching product for that row.</p>
-            <div id="store-filter-toolbar" class="store-filter-toolbar hidden" role="group" aria-label="Show or hide store columns">
-                <button type="button" class="store-filter-btn woolies is-active" data-store="woolworths" aria-pressed="true">🟢 Woolworths</button>
-                <button type="button" class="store-filter-btn coles is-active" data-store="coles" aria-pressed="true">🔴 Coles</button>
-            </div>
-            <div id="aligned-compare-rows" class="aligned-compare-rows cols-2"></div>
+          <h2>Compare by item</h2>
+          <p class="aligned-compare-hint">
+            Each row pairs Woolworths and Coles products in the most relevant order. A dashed box
+            means that supermarket has no matching product for that row.
+          </p>
+          <div
+            id="store-filter-toolbar"
+            class="store-filter-toolbar hidden"
+            role="group"
+            aria-label="Show or hide store columns"
+          >
+            <button
+              type="button"
+              class="store-filter-btn woolies is-active"
+              data-store="woolworths"
+              aria-pressed="true"
+            >
+              🟢 Woolworths
+            </button>
+            <button
+              type="button"
+              class="store-filter-btn coles is-active"
+              data-store="coles"
+              aria-pressed="true"
+            >
+              🔴 Coles
+            </button>
+          </div>
+          <div id="aligned-compare-rows" class="aligned-compare-rows cols-2"></div>
         </section>
 
         <main class="comparison-grid comparison-grid--browse comparison-grid--two hidden">
-            <div class="store-column" id="woolies-col">
-                <div class="store-brand woolies-brand">
-                    <h2>Woolworths</h2>
-                </div>
-                <div id="woolworths-results" class="results-list">
-                    <p class="status-text">Enter an item to see prices...</p>
-                </div>
+          <div class="store-column" id="woolies-col">
+            <div class="store-brand woolies-brand">
+              <h2>Woolworths</h2>
             </div>
+            <div id="woolworths-results" class="results-list">
+              <p class="status-text">Enter an item to see prices...</p>
+            </div>
+          </div>
 
-            <div class="store-column" id="coles-col">
-                <div class="store-brand coles-brand">
-                    <h2>Coles</h2>
-                </div>
-                <div id="coles-results" class="results-list">
-                    <p class="status-text">Enter an item to see prices...</p>
-                </div>
+          <div class="store-column" id="coles-col">
+            <div class="store-brand coles-brand">
+              <h2>Coles</h2>
             </div>
+            <div id="coles-results" class="results-list">
+              <p class="status-text">Enter an item to see prices...</p>
+            </div>
+          </div>
         </main>
+      </div>
 
-        </div>
+      <section id="panel-watchlist" class="tab-panel watchlist-panel hidden">
+        <h2>Your price watchlist</h2>
+        <p class="watchlist-intro">
+          Products you marked with 🔔 are refreshed with the latest store prices. Tap a card to
+          expand its price history chart.
+        </p>
+        <button type="button" id="refresh-watchlist-btn" class="refresh-watchlist-btn">
+          Refresh prices
+        </button>
+        <div id="watchlist-status" class="watchlist-status"></div>
+        <div id="watchlist-grid" class="watchlist-grid"></div>
+      </section>
 
-        <section id="panel-watchlist" class="tab-panel watchlist-panel hidden">
-            <h2>Your price watchlist</h2>
-            <p class="watchlist-intro">Products you marked with 🔔 are refreshed with the latest store prices. Tap a card to expand its price history chart.</p>
-            <button type="button" id="refresh-watchlist-btn" class="refresh-watchlist-btn">Refresh prices</button>
-            <div id="watchlist-status" class="watchlist-status"></div>
-            <div id="watchlist-grid" class="watchlist-grid"></div>
-        </section>
+      <aside id="cart-panel" class="cart-panel hidden" aria-label="Your cart">
+        <h3>Your cart</h3>
+        <div id="cart-trip-savings" class="trip-savings-banner hidden" aria-live="polite"></div>
+        <div id="cart-items" class="cart-items"></div>
+        <div id="cart-totals" class="cart-totals"></div>
+        <p id="cart-savings" class="cart-savings"></p>
+        <button
+          type="button"
+          id="export-cart-pdf-btn"
+          class="export-pdf-btn"
+          title="Download your cart as a PDF shopping list (free Beta)"
+        >
+          Export shopping list (PDF)
+        </button>
+        <button type="button" id="clear-cart" class="clear-cart-btn">Clear cart</button>
+      </aside>
 
-        <aside id="cart-panel" class="cart-panel hidden" aria-label="Your cart">
-            <h3>Your cart</h3>
-            <div id="cart-trip-savings" class="trip-savings-banner hidden" aria-live="polite"></div>
-            <div id="cart-items" class="cart-items"></div>
-            <div id="cart-totals" class="cart-totals"></div>
-            <p id="cart-savings" class="cart-savings"></p>
-            <button
-                type="button"
-                id="export-cart-pdf-btn"
-                class="export-pdf-btn"
-                title="Download your cart as a PDF shopping list (free Beta)"
-            >
-                Export shopping list (PDF)
-            </button>
-            <button type="button" id="clear-cart" class="clear-cart-btn">Clear cart</button>
-        </aside>
-
-        <footer class="site-footer" role="contentinfo">
-            <!-- 1. Footer: ShoppingSmart (không còn SmartChoice) -->
-            <p class="site-footer-meta">
-                &copy; 2026 ShoppingSmart. Built for the community.
-                |
-                <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
-            </p>
-            <!-- UX: ẩn bộ đếm pageviews — không hiển thị cho người dùng
+      <footer class="site-footer" role="contentinfo">
+        <!-- 1. Footer: ShoppingSmart (không còn SmartChoice) -->
+        <p class="site-footer-meta">
+          &copy; 2026 ShoppingSmart. Built for the community. |
+          <a href="/terms" class="site-footer-link">Terms of Use &amp; Disclaimer</a>
+        </p>
+        <!-- UX: ẩn bộ đếm pageviews — không hiển thị cho người dùng
             <p id="pageviews-display" class="pageviews-display" hidden aria-live="polite">
                 📊 Pageviews: <span id="pageviews-count">—</span>
             </p>
             -->
-            <p class="site-footer-legal">
-                <!-- 1. Disclaimer: ShoppingSmart -->
-                ShoppingSmart is an independent platform built for consumer price comparison purposes.
-                We are not officially affiliated with, do not represent, and are not authorized by Coles Supermarkets or Woolworths Group.
-                Brand names, logos, and product images are the copyright of their respective owners.
-            </p>
-        </footer>
+        <p class="site-footer-legal">
+          <!-- 1. Disclaimer: ShoppingSmart -->
+          ShoppingSmart is an independent platform built for consumer price comparison purposes. We
+          are not officially affiliated with, do not represent, and are not authorized by Coles
+          Supermarkets or Woolworths Group. Brand names, logos, and product images are the copyright
+          of their respective owners.
+        </p>
+      </footer>
 
-        <!-- PWA: custom install banner (shown after 30s or successful search) -->
-        <div
-            id="pwa-install-banner"
-            class="pwa-install-banner hidden"
-            role="region"
-            aria-label="Install ShoppingSmart app"
-        >
-            <div class="pwa-install-banner-inner">
-                <span class="pwa-install-icon" aria-hidden="true">📲</span>
-                <div class="pwa-install-copy">
-                    <strong class="pwa-install-title">Install ShoppingSmart</strong>
-                    <span id="pwa-install-sub" class="pwa-install-sub">Quick access from your home screen</span>
-                </div>
-                <button type="button" id="pwa-install-btn" class="pwa-install-btn">Install</button>
-                <button
-                    type="button"
-                    id="pwa-install-dismiss"
-                    class="pwa-install-dismiss"
-                    aria-label="Dismiss install suggestion"
-                >✕</button>
-            </div>
+      <!-- PWA: custom install banner (shown after 30s or successful search) -->
+      <div
+        id="pwa-install-banner"
+        class="pwa-install-banner hidden"
+        role="region"
+        aria-label="Install ShoppingSmart app"
+      >
+        <div class="pwa-install-banner-inner">
+          <span class="pwa-install-icon" aria-hidden="true">📲</span>
+          <div class="pwa-install-copy">
+            <strong class="pwa-install-title">Install ShoppingSmart</strong>
+            <span id="pwa-install-sub" class="pwa-install-sub"
+              >Quick access from your home screen</span
+            >
+          </div>
+          <button type="button" id="pwa-install-btn" class="pwa-install-btn">Install</button>
+          <button
+            type="button"
+            id="pwa-install-dismiss"
+            class="pwa-install-dismiss"
+            aria-label="Dismiss install suggestion"
+          >
+            ✕
+          </button>
         </div>
+      </div>
     </div>
 
     <!-- Barcode scanner library (bundled locally under public/) -->
@@ -427,13 +508,15 @@
       (function () {
         var h = location.hostname;
         if (h === 'localhost' || h === '127.0.0.1') return;
-        ['/_vercel/insights/script.js', '/_vercel/speed-insights/script.js'].forEach(function (src) {
-          var el = document.createElement('script');
-          el.defer = true;
-          el.src = src;
-          document.body.appendChild(el);
-        });
+        ['/_vercel/insights/script.js', '/_vercel/speed-insights/script.js'].forEach(
+          function (src) {
+            var el = document.createElement('script');
+            el.defer = true;
+            el.src = src;
+            document.body.appendChild(el);
+          }
+        );
       })();
     </script>
-</body>
+  </body>
 </html>

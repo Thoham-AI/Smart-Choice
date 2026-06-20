@@ -2,7 +2,7 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 (async () => {
-  const userDataDir = path.join(__dirname, 'user_data');
+  const userDataDir = path.join(__dirname, '..', 'user_data');
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     viewport: { width: 1280, height: 900 },
@@ -38,9 +38,7 @@ const { chromium } = require('playwright');
   const dom = await page.evaluate(() => ({
     title: document.title,
     tiles: document.querySelectorAll('section[data-testid="product-tile"]').length,
-    sample: Array.from(
-      document.querySelectorAll('section[data-testid="product-tile"]')
-    )
+    sample: Array.from(document.querySelectorAll('section[data-testid="product-tile"]'))
       .slice(0, 3)
       .map((el) => ({
         name: el.querySelector('.product__title')?.innerText?.trim(),

@@ -1,4 +1,4 @@
-const { searchWoolworths, closeBrowser } = require('./fetcher');
+const { searchWoolworths, closeBrowser } = require('../fetcher');
 
 (async () => {
   const items = await searchWoolworths('milk', 5);

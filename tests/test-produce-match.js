@@ -1,13 +1,13 @@
 /**
  * Unit test: generic broccoli must not match Chinese/Asian broccoli variants.
- * Run: node test-produce-match.js
- * Debug logs: MATCH_DEBUG=1 node test-produce-match.js
+ * Run: node tests/test-produce-match.js
+ * Debug logs: MATCH_DEBUG=1 node tests/test-produce-match.js
  */
 const path = require('path');
 process.env.NODE_ENV = 'production';
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { __matchingTest__ } = require('./api/index.js');
+const { __matchingTest__ } = require('../api/index.js');
 const {
   scoreSmartMatchPair,
   scoreProductPair,
@@ -72,8 +72,14 @@ assert(
   !matchQualifiersCompatible(woolBroccoli.name, colesChineseBroccoli.name).ok,
   'Chinese/Asian/Choy qualifiers must not match generic broccoli'
 );
-assert(produceVariantConflict(woolBroccoli.name, colesChineseBroccoli.name), 'produce variant conflict');
-assert(!varietiesCompatible(woolBroccoli.name, colesChineseBroccoli.name), 'varieties incompatible');
+assert(
+  produceVariantConflict(woolBroccoli.name, colesChineseBroccoli.name),
+  'produce variant conflict'
+);
+assert(
+  !varietiesCompatible(woolBroccoli.name, colesChineseBroccoli.name),
+  'varieties incompatible'
+);
 
 // Scoring rejects bad pair
 const badSmart = scoreSmartMatchPair(woolBroccoli, colesChineseBroccoli);
@@ -88,8 +94,14 @@ assert(goodSmart >= 0.55, `generic pair should score high (got ${goodSmart})`);
 assert(goodLegacy >= 0.58, `generic legacy pair should pass (got ${goodLegacy})`);
 
 // Organic vs conventional rejected
-assert(!matchQualifiersCompatible(woolOrganicBroccoli.name, colesBroccoli.name).ok, 'organic asymmetry');
-assert(scoreSmartMatchPair(woolOrganicBroccoli, colesBroccoli) < 0, 'organic vs conventional rejected');
+assert(
+  !matchQualifiersCompatible(woolOrganicBroccoli.name, colesBroccoli.name).ok,
+  'organic asymmetry'
+);
+assert(
+  scoreSmartMatchPair(woolOrganicBroccoli, colesBroccoli) < 0,
+  'organic vs conventional rejected'
+);
 
 // Greedy pairing prefers correct Coles line
 const { pairs } = buildSmartComparePairs([woolBroccoli], [colesChineseBroccoli, colesBroccoli]);
@@ -117,7 +129,10 @@ const colesFreshCucumber = {
   categoryBucket: 'fruit_veg',
 };
 
-assert(hasFoodStateFormMismatch(woolCucumber.name, colesPickledCucumber.name), 'cucumber vs pickle state mismatch');
+assert(
+  hasFoodStateFormMismatch(woolCucumber.name, colesPickledCucumber.name),
+  'cucumber vs pickle state mismatch'
+);
 assert(
   evaluatePairingGuardrails(
     woolCucumber.name,
@@ -127,9 +142,18 @@ assert(
   ),
   'cucumber vs pickle guardrail reject'
 );
-assert(scoreSmartMatchPair(woolCucumber, colesPickledCucumber) < 0, 'pickled cucumber smart pair rejected');
-assert(scoreProductPair(woolCucumber, colesPickledCucumber) === 0, 'pickled cucumber legacy pair rejected');
-assert(scoreSmartMatchPair(woolCucumber, colesFreshCucumber) >= 0.55, 'fresh cucumber pair allowed');
+assert(
+  scoreSmartMatchPair(woolCucumber, colesPickledCucumber) < 0,
+  'pickled cucumber smart pair rejected'
+);
+assert(
+  scoreProductPair(woolCucumber, colesPickledCucumber) === 0,
+  'pickled cucumber legacy pair rejected'
+);
+assert(
+  scoreSmartMatchPair(woolCucumber, colesFreshCucumber) >= 0.55,
+  'fresh cucumber pair allowed'
+);
 
 const { pairs: cucumberPairs } = buildSmartComparePairs(
   [woolCucumber],
@@ -167,8 +191,14 @@ assert(
   ),
   'watermelon whole vs fingers packaging mismatch'
 );
-assert(scoreSmartMatchPair(woolWatermelon, colesWatermelonFingers) < 0, 'watermelon fingers smart pair rejected');
-assert(scoreProductPair(woolWatermelon, colesWatermelonFingers) === 0, 'watermelon fingers legacy pair rejected');
+assert(
+  scoreSmartMatchPair(woolWatermelon, colesWatermelonFingers) < 0,
+  'watermelon fingers smart pair rejected'
+);
+assert(
+  scoreProductPair(woolWatermelon, colesWatermelonFingers) === 0,
+  'watermelon fingers legacy pair rejected'
+);
 
 const { pairs: melonPairs, unmatchedColes: melonUnmatched } = buildSmartComparePairs(
   [woolWatermelon],
@@ -176,7 +206,10 @@ const { pairs: melonPairs, unmatchedColes: melonUnmatched } = buildSmartCompareP
 );
 assert(melonPairs.length === 1, 'watermelon should pair one row');
 assert(!/fingers/i.test(melonPairs[0].coles.name), 'must not pair watermelon fingers');
-assert(melonUnmatched.some((p) => /fingers/i.test(p.name)), 'fingers should remain unmatched');
+assert(
+  melonUnmatched.some((p) => /fingers/i.test(p.name)),
+  'fingers should remain unmatched'
+);
 
 // Coles must never cross-pair with another Coles item
 const colesOnlyA = { name: 'Coles Fresh Broccoli 1 each', price: 3.8, supermarket: 'Coles' };
@@ -198,7 +231,10 @@ const cucumberPick = pickBestProductMatch(
   'cucumber',
   cucumberListItem
 );
-assert(cucumberPick.product && !/pickled|jar/i.test(cucumberPick.product.name), 'pickBest avoids pickled cucumber');
+assert(
+  cucumberPick.product && !/pickled|jar/i.test(cucumberPick.product.name),
+  'pickBest avoids pickled cucumber'
+);
 
 // Fresh cucumber must not pair with soap sharing the keyword
 const colesCucumberSoap = {
@@ -218,8 +254,14 @@ assert(
   ),
   'cucumber vs soap cross-department mismatch'
 );
-assert(scoreSmartMatchPair(woolCucumber, colesCucumberSoap) < 0, 'cucumber vs soap smart pair rejected');
-assert(scoreProductPair(woolCucumber, colesCucumberSoap) === 0, 'cucumber vs soap legacy pair rejected');
+assert(
+  scoreSmartMatchPair(woolCucumber, colesCucumberSoap) < 0,
+  'cucumber vs soap smart pair rejected'
+);
+assert(
+  scoreProductPair(woolCucumber, colesCucumberSoap) === 0,
+  'cucumber vs soap legacy pair rejected'
+);
 
 const { pairs: soapPairs } = buildSmartComparePairs(
   [woolCucumber],
@@ -236,7 +278,10 @@ const colesWatermelonRoller = {
   categoryBucket: 'confectionery',
   categoryLabels: ['Confectionery', 'Candy'],
 };
-assert(nameSuggestsNonFoodProductTitle(colesWatermelonRoller.name), 'candy roller flagged non-food');
+assert(
+  nameSuggestsNonFoodProductTitle(colesWatermelonRoller.name),
+  'candy roller flagged non-food'
+);
 assert(
   hasBulkVsMicroWeightMismatch(
     woolWatermelon.name,
@@ -246,14 +291,20 @@ assert(
   ),
   '8kg watermelon vs 20g roller weight mismatch'
 );
-assert(scoreSmartMatchPair(woolWatermelon, colesWatermelonRoller) < 0, 'watermelon vs roller rejected');
+assert(
+  scoreSmartMatchPair(woolWatermelon, colesWatermelonRoller) < 0,
+  'watermelon vs roller rejected'
+);
 
 const { pairs: rollerPairs } = buildSmartComparePairs(
   [woolWatermelon],
   [colesWatermelonRoller, colesWholeWatermelon]
 );
 assert(rollerPairs.length === 1, 'watermelon should pair despite roller candidate');
-assert(!/roller|candy/i.test(rollerPairs[0].coles.name), 'must not pair watermelon with candy roller');
+assert(
+  !/roller|candy/i.test(rollerPairs[0].coles.name),
+  'must not pair watermelon with candy roller'
+);
 
 // pickBest must not return soap for cucumber search
 const soapPick = pickBestProductMatch(
@@ -305,7 +356,10 @@ const ricePick = pickBestProductMatch(
   'watermelon',
   watermelonListItem
 );
-assert(ricePick.product && /watermelon/i.test(ricePick.product.name), 'should pick real watermelon');
+assert(
+  ricePick.product && /watermelon/i.test(ricePick.product.name),
+  'should pick real watermelon'
+);
 assert(!/rice/i.test(ricePick.product.name), 'must not pick broken rice for watermelon');
 
 // Pickled jar cucumber must not match 2kg fresh cucumber intent
@@ -414,8 +468,7 @@ assert(
   'real watermelon beats watermelon water'
 );
 assert(
-  freshProduceRankingScoreOverride(colesWholeWatermelon, 'watermelon', watermelonListItem) >=
-    1000,
+  freshProduceRankingScoreOverride(colesWholeWatermelon, 'watermelon', watermelonListItem) >= 1000,
   'real watermelon gets massive fresh produce boost'
 );
 assert(

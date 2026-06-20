@@ -1,0 +1,5 @@
+node_modules/
+package-lock.json
+public/html5-qrcode.min.js
+user_data/
+.vercel/

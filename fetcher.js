@@ -32,35 +32,32 @@ function getBrowserContext() {
 }
 
 async function searchWoolworthsApi(query, limit) {
-  const res = await fetch(
-    'https://www.woolworths.com.au/apis/ui/Search/products',
-    {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json, text/plain, */*',
-        'Content-Type': 'application/json',
-        Origin: 'https://www.woolworths.com.au',
-        Referer: `https://www.woolworths.com.au/shop/search/products?searchTerm=${encodeURIComponent(query)}`,
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-      },
-      body: JSON.stringify({
-        Filters: [],
-        IsSpecial: false,
-        Location: `/shop/search/products?searchTerm=${query}`,
-        PageNumber: 1,
-        PageSize: limit,
-        SearchTerm: query,
-        SortType: 'TraderRelevance',
-        IsHideEverydayMarketProducts: false,
-        IsRegisteredRewardCardPromotion: null,
-        ExcludeSearchTypes: ['UntraceableVendors'],
-        GpBoost: 0,
-        GroupEdmVariants: false,
-        EnableAdReRanking: false,
-      }),
-    }
-  );
+  const res = await fetch('https://www.woolworths.com.au/apis/ui/Search/products', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      Origin: 'https://www.woolworths.com.au',
+      Referer: `https://www.woolworths.com.au/shop/search/products?searchTerm=${encodeURIComponent(query)}`,
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    },
+    body: JSON.stringify({
+      Filters: [],
+      IsSpecial: false,
+      Location: `/shop/search/products?searchTerm=${query}`,
+      PageNumber: 1,
+      PageSize: limit,
+      SearchTerm: query,
+      SortType: 'TraderRelevance',
+      IsHideEverydayMarketProducts: false,
+      IsRegisteredRewardCardPromotion: null,
+      ExcludeSearchTypes: ['UntraceableVendors'],
+      GpBoost: 0,
+      GroupEdmVariants: false,
+      EnableAdReRanking: false,
+    }),
+  });
 
   if (!res.ok) {
     throw new Error(`Woolworths API status ${res.status}`);
@@ -198,47 +195,47 @@ async function searchWoolworths(query, limit = DEFAULT_LIMIT) {
 
 async function searchColes(query, limit = DEFAULT_LIMIT) {
   return runInBrowserQueue(async () => {
-  const context = await getBrowserContext();
-  const page = await context.newPage();
-  try {
-  await page.goto(
-    `https://www.coles.com.au/search/products?q=${encodeURIComponent(query)}`,
-    { waitUntil: 'domcontentloaded', timeout: 90000 }
-  );
+    const context = await getBrowserContext();
+    const page = await context.newPage();
+    try {
+      await page.goto(`https://www.coles.com.au/search/products?q=${encodeURIComponent(query)}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 90000,
+      });
 
-  await page
-    .waitForSelector('section[data-testid="product-tile"] .price__value', {
-      timeout: 25000,
-    })
-    .catch(() => null);
+      await page
+        .waitForSelector('section[data-testid="product-tile"] .price__value', {
+          timeout: 25000,
+        })
+        .catch(() => null);
 
-  const raw = await page.evaluate((max) => {
-    const tiles = Array.from(
-      document.querySelectorAll('section[data-testid="product-tile"]')
-    ).slice(0, max);
+      const raw = await page.evaluate((max) => {
+        const tiles = Array.from(
+          document.querySelectorAll('section[data-testid="product-tile"]')
+        ).slice(0, max);
 
-    return tiles.map((tile) => ({
-      name: tile.querySelector('.product__title')?.innerText?.trim() || 'Coles item',
-      price: tile.querySelector('.price__value')?.innerText?.trim() || '',
-      image:
-        tile.querySelector('img')?.src ||
-        tile.querySelector('img')?.getAttribute('data-src') ||
-        null,
-    }));
-  }, limit);
+        return tiles.map((tile) => ({
+          name: tile.querySelector('.product__title')?.innerText?.trim() || 'Coles item',
+          price: tile.querySelector('.price__value')?.innerText?.trim() || '',
+          image:
+            tile.querySelector('img')?.src ||
+            tile.querySelector('img')?.getAttribute('data-src') ||
+            null,
+        }));
+      }, limit);
 
-  return raw
-    .map((item) => ({
-      name: item.name,
-      price: normalizePrice(item.price),
-      unit: null,
-      image: item.image,
-      store: 'coles',
-    }))
-    .filter((item) => item.price);
-  } finally {
-    await page.close().catch(() => {});
-  }
+      return raw
+        .map((item) => ({
+          name: item.name,
+          price: normalizePrice(item.price),
+          unit: null,
+          image: item.image,
+          store: 'coles',
+        }))
+        .filter((item) => item.price);
+    } finally {
+      await page.close().catch(() => {});
+    }
   });
 }
 
@@ -284,11 +281,7 @@ function buildComparison(woolworths, coles) {
     const colesPrice = best.cItem.price;
     const wooliesPrice = wItem.price;
     const cheaper =
-      wooliesPrice < colesPrice
-        ? 'woolworths'
-        : colesPrice < wooliesPrice
-          ? 'coles'
-          : 'tie';
+      wooliesPrice < colesPrice ? 'woolworths' : colesPrice < wooliesPrice ? 'coles' : 'tie';
     const saving = Math.abs(wooliesPrice - colesPrice);
 
     pairs.push({
@@ -300,9 +293,7 @@ function buildComparison(woolworths, coles) {
     });
   }
 
-  const wwMin = woolworths.length
-    ? Math.min(...woolworths.map((p) => p.price))
-    : null;
+  const wwMin = woolworths.length ? Math.min(...woolworths.map((p) => p.price)) : null;
   const colesMin = coles.length ? Math.min(...coles.map((p) => p.price)) : null;
 
   return {
@@ -319,9 +310,7 @@ function buildComparison(woolworths, coles) {
               ? 'coles'
               : 'tie',
       difference:
-        wwMin != null && colesMin != null
-          ? Number(Math.abs(wwMin - colesMin).toFixed(2))
-          : null,
+        wwMin != null && colesMin != null ? Number(Math.abs(wwMin - colesMin).toFixed(2)) : null,
     },
   };
 }

@@ -2,7 +2,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const mongo = require('../lib/mongodb');
 
 (async () => {
-  if (mongo.getConfiguredDatabaseName() !== 'smartchoice') {
+  if (mongo.getConfiguredDatabaseName() !== 'shoppingsmart') {
     throw new Error(`Unexpected MongoDB database: ${mongo.getConfiguredDatabaseName()}`);
   }
 
@@ -11,7 +11,7 @@ const mongo = require('../lib/mongodb');
     priceHistoryCollection: 'price_history',
   });
   if (!db) throw new Error('MongoDB connect failed');
-  if (mongo.getDatabaseName() !== 'smartchoice') {
+  if (mongo.getDatabaseName() !== 'shoppingsmart') {
     throw new Error(`Connected to wrong database: ${mongo.getDatabaseName()}`);
   }
 

@@ -1,31 +1,41 @@
 {
   "name": "shoppingsmart",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Real-time grocery price comparison for Coles and Woolworths (Australia)",
+  "main": "api/index.js",
   "scripts": {
     "start": "node api/index.js",
     "dev": "node api/index.js",
     "start:scraper": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node tests/test-produce-match.js",
+    "test:mongo": "node tests/test-mongo-read-write.js",
+    "verify:mongo": "node scripts/verify-mongo-cache.js",
+    "format": "prettier --write \"**/*.{js,html,css,json,md}\" --ignore-path .prettierignore"
   },
-  "keywords": [],
+  "keywords": [
+    "grocery",
+    "price-comparison",
+    "coles",
+    "woolworths",
+    "barcode"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@vercel/analytics": "^2.0.1",
     "axios": "^1.13.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "mongodb": "^6.16.0",
     "openai": "^4.76.3",
+    "string-similarity": "^4.0.4"
+  },
+  "devDependencies": {
     "playwright": "^1.57.0",
-    "playwright-extra": "^4.3.6",
+    "prettier": "^3.6.2",
     "puppeteer": "^24.34.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "string-similarity": "^4.0.4"
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }

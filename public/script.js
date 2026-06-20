@@ -22,8 +22,7 @@ const DEFAULT_SYDNEY_LOCATION = {
 const LOCATION_CONSENT_MESSAGE =
   'Share GPS, enter your postcode, or pick a state so we can show prices for your local Coles and Woolworths stores.';
 
-const BARCODE_NOT_FOUND_MESSAGE =
-  'Barcode not found. Try typing the product name instead.';
+const BARCODE_NOT_FOUND_MESSAGE = 'Barcode not found. Try typing the product name instead.';
 const BARCODE_DATABASE_NOT_FOUND_MESSAGE =
   'Barcode not found in database. Please type the product name.';
 
@@ -67,8 +66,7 @@ function renderNearestStoreBanner(nearestStores) {
 
   nearestStoresContext = nearestStores || { coles: null, woolworths: null };
   const colesLabel = nearestStores?.coles?.name || nearestStores?.coles?.label || null;
-  const woolLabel =
-    nearestStores?.woolworths?.name || nearestStores?.woolworths?.label || null;
+  const woolLabel = nearestStores?.woolworths?.name || nearestStores?.woolworths?.label || null;
 
   if (!colesLabel && !woolLabel) {
     hideNearestStoreBanner();
@@ -303,7 +301,9 @@ function onLocationPostcodeApply() {
 
   const input = document.getElementById('location-postcode-input');
   const stateSelect = document.getElementById('location-state-select');
-  const postcode = String(input?.value || '').replace(/\D/g, '').slice(0, 4);
+  const postcode = String(input?.value || '')
+    .replace(/\D/g, '')
+    .slice(0, 4);
   const state = stateSelect?.value || null;
 
   if (postcode.length < 4 && !state) {
@@ -430,8 +430,7 @@ function updateLocationNoticeUi(optionalMessage) {
   }
 
   if (userLocation.source === 'gps') {
-    textEl.textContent =
-      'Using your GPS location to show prices from supermarkets near you.';
+    textEl.textContent = 'Using your GPS location to show prices from supermarkets near you.';
     return;
   }
 
@@ -697,11 +696,7 @@ function updateCartSavingsDisplay() {
   const cart = loadCart();
   const { saving, referenceTotal } = calcCartCumulativeSaving(cart);
   totalSaved = saving;
-  renderTripSavingsBanner(
-    document.getElementById('cart-trip-savings'),
-    totalSaved,
-    referenceTotal
-  );
+  renderTripSavingsBanner(document.getElementById('cart-trip-savings'), totalSaved, referenceTotal);
 }
 
 /** Render banner "You've saved" trong giỏ hàng */
@@ -766,9 +761,7 @@ function addToSearchHistory(query, type = 'search') {
   if (!text) return;
 
   const normalized = text.toLowerCase();
-  let list = loadSearchHistory().filter(
-    (entry) => entry.query.toLowerCase() !== normalized
-  );
+  let list = loadSearchHistory().filter((entry) => entry.query.toLowerCase() !== normalized);
 
   list.unshift({
     query: text,
@@ -893,7 +886,9 @@ function formatRequestLabel(request) {
 
   const keyword = String(request.keyword || '').trim();
   const qty = Number(request.quantity);
-  const unit = String(request.unit || '').trim().toLowerCase();
+  const unit = String(request.unit || '')
+    .trim()
+    .toLowerCase();
 
   if (!keyword) return '';
   if (!Number.isFinite(qty) || qty <= 0) return keyword;
@@ -1102,16 +1097,22 @@ function addToCart(item) {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     name: item.name,
     woolworthsPrice:
-      pair?.woolworths?.price ??
-      (item.supermarket === 'Woolworths' ? item.price : null),
-    colesPrice:
-      pair?.coles?.price ?? (item.supermarket === 'Coles' ? item.price : null),
-    woolworthsPackKg: pair?.woolworths?.packWeightKg ?? (item.supermarket === 'Woolworths' ? item.packWeightKg : null),
-    colesPackKg: pair?.coles?.packWeightKg ?? (item.supermarket === 'Coles' ? item.packWeightKg : null),
-    woolworthsPricePerKg: pair?.woolworths?.pricePerKg ?? (item.supermarket === 'Woolworths' ? item.pricePerKg : null),
-    colesPricePerKg: pair?.coles?.pricePerKg ?? (item.supermarket === 'Coles' ? item.pricePerKg : null),
-    woolworthsUnitText: pair?.woolworths?.unit_price_text ?? (item.supermarket === 'Woolworths' ? item.unit_price_text : null),
-    colesUnitText: pair?.coles?.unit_price_text ?? (item.supermarket === 'Coles' ? item.unit_price_text : null),
+      pair?.woolworths?.price ?? (item.supermarket === 'Woolworths' ? item.price : null),
+    colesPrice: pair?.coles?.price ?? (item.supermarket === 'Coles' ? item.price : null),
+    woolworthsPackKg:
+      pair?.woolworths?.packWeightKg ??
+      (item.supermarket === 'Woolworths' ? item.packWeightKg : null),
+    colesPackKg:
+      pair?.coles?.packWeightKg ?? (item.supermarket === 'Coles' ? item.packWeightKg : null),
+    woolworthsPricePerKg:
+      pair?.woolworths?.pricePerKg ?? (item.supermarket === 'Woolworths' ? item.pricePerKg : null),
+    colesPricePerKg:
+      pair?.coles?.pricePerKg ?? (item.supermarket === 'Coles' ? item.pricePerKg : null),
+    woolworthsUnitText:
+      pair?.woolworths?.unit_price_text ??
+      (item.supermarket === 'Woolworths' ? item.unit_price_text : null),
+    colesUnitText:
+      pair?.coles?.unit_price_text ?? (item.supermarket === 'Coles' ? item.unit_price_text : null),
     woolworthsUrl: pair?.woolworths?.url || (item.supermarket === 'Woolworths' ? item.url : ''),
     colesUrl: pair?.coles?.url || (item.supermarket === 'Coles' ? item.url : ''),
     lineSaving: 0,
@@ -1207,7 +1208,8 @@ function renderCartPanel() {
 
   if (colesCount > 0 && woolworthsCount > 0) {
     const diff = Math.abs(colesTotal - woolworthsTotal);
-    const cheaperStore = woolworthsTotal < colesTotal ? 'Woolworths' : colesTotal < woolworthsTotal ? 'Coles' : null;
+    const cheaperStore =
+      woolworthsTotal < colesTotal ? 'Woolworths' : colesTotal < woolworthsTotal ? 'Coles' : null;
     if (cheaperStore && diff > 0) {
       savingsEl.innerHTML = `If you buy this cart at <strong>${cheaperStore}</strong>, you save <strong>$${diff.toFixed(2)}</strong>!`;
     } else {
@@ -1273,7 +1275,9 @@ function showAiAnalyzeResults() {
 
 /** Toggle hero logo visibility (hidden after results load). */
 function setSearchResultsVisible(hasResults) {
-  document.getElementById('search-section')?.classList.toggle('search-section--has-results', Boolean(hasResults));
+  document
+    .getElementById('search-section')
+    ?.classList.toggle('search-section--has-results', Boolean(hasResults));
 }
 
 /** Reset compare UI — clear input, hide results, restore idle home layout. */
@@ -1299,7 +1303,8 @@ function resetCompareView() {
   hideRevealSection(summarySection);
   hideCompareStoreFilterToolbar();
   if (browseGrid) browseGrid.classList.add('hidden');
-  if (wooliesCont) wooliesCont.innerHTML = '<p class="status-text">Enter an item to see prices...</p>';
+  if (wooliesCont)
+    wooliesCont.innerHTML = '<p class="status-text">Enter an item to see prices...</p>';
   if (colesCont) colesCont.innerHTML = '<p class="status-text">Enter an item to see prices...</p>';
 
   compareStoreVisibility.woolworths = true;
@@ -1369,7 +1374,6 @@ async function translateBarcodeToProductName(scannedCode) {
       if (!response.ok) continue;
 
       const data = await response.json();
-      console.log('OFF API Response:', data);
       // status: 0 nghĩa là OFF không có mã này; frontend sẽ dừng và yêu cầu nhập tên.
       if (data?.status !== 1) continue;
 
@@ -1476,7 +1480,6 @@ async function runCompareSearch({ keyword, barcode, barcodeContext }) {
         matchedBarcode: offMatch.matchedBarcode,
         productName: offMatch.productName,
       };
-      console.log('OFF translated barcode to:', finalKeyword);
       setBarcodeLookupStatus(`Found: ${finalKeyword}, comparing...`);
       document.getElementById('itemInput').value = finalKeyword;
     }
@@ -1569,7 +1572,9 @@ function displayCompareResults(data, options = {}) {
   lastSimilarPairs = [];
 
   if (options.fromBarcode && data.scannedBarcode) {
-    showBarcodeScanBanner(`Barcode scanned: ${data.scannedBarcode} — showing matched products below.`);
+    showBarcodeScanBanner(
+      `Barcode scanned: ${data.scannedBarcode} — showing matched products below.`
+    );
   }
 
   if (alignedRows.length) {
@@ -1684,9 +1689,7 @@ function applyCompareStoreColumnVisibility() {
   const container = document.getElementById('aligned-compare-rows');
   if (!container) return;
 
-  const visibleCount = ['woolworths', 'coles'].filter((k) =>
-    isCompareStoreVisible(k)
-  ).length;
+  const visibleCount = ['woolworths', 'coles'].filter((k) => isCompareStoreVisible(k)).length;
 
   container.classList.remove('cols-1', 'cols-2', 'cols-3');
   container.classList.add(`cols-${Math.max(visibleCount, 1)}`);
@@ -1747,11 +1750,11 @@ function renderSummaryFromAlignedKeywordBlocks(el, section, keywordBlocks, data 
     const peers = getMatrixRowPeers(topRow, compareStoreVisibility);
     if (!peers.length) {
       const err = data.storeErrors || {};
-      const visibleStores = ['woolworths', 'coles'].filter((k) =>
-        isCompareStoreVisible(k)
-      );
+      const visibleStores = ['woolworths', 'coles'].filter((k) => isCompareStoreVisible(k));
       const storeLabel = { woolworths: 'Woolworths', coles: 'Coles' };
-      const apiDown = visibleStores.filter((k) => err[k] && /timed out|unable to load/i.test(err[k]));
+      const apiDown = visibleStores.filter(
+        (k) => err[k] && /timed out|unable to load/i.test(err[k])
+      );
       if (apiDown.length >= 2) {
         text += `<strong>${escapeHtml(block.keyword)}</strong>: could not reach ${apiDown.length} store(s) — check network, MongoDB, and API keys. `;
       } else if (apiDown.length === 1) {
@@ -2266,8 +2269,7 @@ document.getElementById('brand-hero-link')?.addEventListener('click', handleBran
 // --- Compare search: rotating placeholder hints (Australian grocery examples) ---
 
 /** Static fallback on first paint, on focus, and when rotation is paused. */
-const COMPARE_SEARCH_PLACEHOLDER_STATIC =
-  "Search for 'Jasmine rice', 'oyster blade beefsteak'...";
+const COMPARE_SEARCH_PLACEHOLDER_STATIC = "Search for 'Jasmine rice', 'oyster blade beefsteak'...";
 
 /** Rotates when the compare input is empty and unfocused. */
 const COMPARE_SEARCH_PLACEHOLDER_HINTS = [
@@ -2360,8 +2362,12 @@ document.getElementById('clear-cart')?.addEventListener('click', clearCart);
 
 document.getElementById('analyzeListBtn')?.addEventListener('click', analyzeShoppingList);
 
-document.getElementById('ai-results-expand-bar')?.addEventListener('click', expandAiAnalyzeAccordion);
-document.getElementById('ai-results-collapse-bar')?.addEventListener('click', collapseAiAnalyzeAccordion);
+document
+  .getElementById('ai-results-expand-bar')
+  ?.addEventListener('click', expandAiAnalyzeAccordion);
+document
+  .getElementById('ai-results-collapse-bar')
+  ?.addEventListener('click', collapseAiAnalyzeAccordion);
 
 document.getElementById('theme-toggle')?.addEventListener('click', () => {
   const current = document.documentElement.getAttribute('data-theme') || 'light';
@@ -2473,12 +2479,11 @@ function mergeWatchlistRefreshIntoStorage(list, refreshResults) {
     if (!fresh) return entry;
     return {
       ...entry,
-      lastColesPrice:
-        fresh.colesPrice != null ? fresh.colesPrice : entry.lastColesPrice ?? null,
+      lastColesPrice: fresh.colesPrice != null ? fresh.colesPrice : (entry.lastColesPrice ?? null),
       lastWoolworthsPrice:
-        fresh.woolworthsPrice != null ? fresh.woolworthsPrice : entry.lastWoolworthsPrice ?? null,
+        fresh.woolworthsPrice != null ? fresh.woolworthsPrice : (entry.lastWoolworthsPrice ?? null),
       lastCurrentPrice:
-        fresh.currentPrice != null ? fresh.currentPrice : entry.lastCurrentPrice ?? null,
+        fresh.currentPrice != null ? fresh.currentPrice : (entry.lastCurrentPrice ?? null),
     };
   });
 }
@@ -2517,13 +2522,13 @@ function renderWatchlistPanel(refreshResults = null) {
   list.forEach((entry) => {
     const fresh = resultMap.get(entry.id);
     const colesPrice =
-      fresh?.colesPrice != null ? fresh.colesPrice : entry.lastColesPrice ?? null;
+      fresh?.colesPrice != null ? fresh.colesPrice : (entry.lastColesPrice ?? null);
     const woolworthsPrice =
-      fresh?.woolworthsPrice != null ? fresh.woolworthsPrice : entry.lastWoolworthsPrice ?? null;
+      fresh?.woolworthsPrice != null ? fresh.woolworthsPrice : (entry.lastWoolworthsPrice ?? null);
     const currentPrice =
       fresh?.found && fresh.currentPrice != null
         ? fresh.currentPrice
-        : entry.lastCurrentPrice ?? null;
+        : (entry.lastCurrentPrice ?? null);
     const watchedPrice = Number(entry.watchedAtPrice);
     const priceDrop =
       fresh?.isPriceDown && fresh.priceDrop > 0
@@ -2714,7 +2719,8 @@ async function analyzeShoppingList() {
   btn.disabled = true;
   startAiAnalyzeProgress();
   showAiAnalyzeResults();
-  section.querySelector('#ai-parse-info').innerHTML = '<p class="loading">Analyzing with AI and fetching prices...</p>';
+  section.querySelector('#ai-parse-info').innerHTML =
+    '<p class="loading">Analyzing with AI and fetching prices...</p>';
   section.querySelector('#ai-totals-grid').innerHTML = '';
   section.querySelector('#ai-savings-banner').textContent = '';
   section.querySelector('#ai-split-details').innerHTML = '';
@@ -2744,7 +2750,8 @@ async function analyzeShoppingList() {
       err.name === 'AbortError'
         ? 'AI Analyzer timed out while fetching prices. Try a shorter list or run it again.'
         : err.message || 'Analysis failed.';
-    section.querySelector('#ai-parse-info').innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
+    section.querySelector('#ai-parse-info').innerHTML =
+      `<p class="error">${escapeHtml(message)}</p>`;
   } finally {
     btn.disabled = false;
   }
@@ -2763,9 +2770,7 @@ function renderAiShoppingResults(data) {
     <p>Detected <strong>${parsedItems.length}</strong> items
     ${parseSource === 'openai' ? '(via AI)' : '(via local parser)'}:</p>
     <ul class="ai-parsed-list">
-      ${parsedItems
-        .map((item) => `<li>${escapeHtml(formatRequestLabel(item))}</li>`)
-        .join('')}
+      ${parsedItems.map((item) => `<li>${escapeHtml(formatRequestLabel(item))}</li>`).join('')}
     </ul>
   `;
 
@@ -2941,15 +2946,22 @@ function renderAiLineItems(lineItems) {
     row.className = 'ai-line-row';
 
     const kw = line.request?.keyword || '';
-    const colesClass =
-      line.chosenStore === 'Coles' ? 'pick' : line.coles ? '' : 'missing';
-    const woolClass =
-      line.chosenStore === 'Woolworths' ? 'pick' : line.woolworths ? '' : 'missing';
+    const colesClass = line.chosenStore === 'Coles' ? 'pick' : line.coles ? '' : 'missing';
+    const woolClass = line.chosenStore === 'Woolworths' ? 'pick' : line.woolworths ? '' : 'missing';
 
     const colesUsable = line.coles && Number(line.colesLinePrice) > 0;
     const woolUsable = line.woolworths && Number(line.woolworthsLinePrice) > 0;
 
-    const storeCell = (store, product, usable, linePrice, singlePrice, incomplete, incompleteNote, cssClass) => {
+    const storeCell = (
+      store,
+      product,
+      usable,
+      linePrice,
+      singlePrice,
+      incomplete,
+      incompleteNote,
+      cssClass
+    ) => {
       if (usable) {
         return `
         <div class="${cssClass}">

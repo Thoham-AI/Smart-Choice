@@ -1,11 +1,11 @@
 /**
  * Unit test: chicken thigh must not match Thigh Burger; prefer fresh $/kg.
- * Run: node test-chicken-thigh-match.js
+ * Run: node tests/test-chicken-thigh-match.js
  */
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { __matchingTest__ } = require('./api/index.js');
+const { __matchingTest__ } = require('../api/index.js');
 const {
   nameSuggestsProcessedNotCoreIngredient,
   searchIntentSuggestsRawIngredient,

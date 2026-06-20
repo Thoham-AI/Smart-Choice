@@ -49,8 +49,7 @@
 
     const query = params.toString();
     const path = `/api/price-history?${query}`;
-    const url =
-      typeof buildApiUrl === 'function' ? buildApiUrl(path) : `${API_BASE}${path}`;
+    const url = typeof buildApiUrl === 'function' ? buildApiUrl(path) : `${API_BASE}${path}`;
 
     const response = await apiFetch(url);
     const data = await response.json();
@@ -68,9 +67,7 @@
   function buildProductChartFallbackEntry(item, peerProducts = []) {
     const peers = Array.isArray(peerProducts) ? peerProducts.filter(Boolean) : [];
     const colesProduct =
-      item.supermarket === 'Coles'
-        ? item
-        : peers.find((p) => p.supermarket === 'Coles') || null;
+      item.supermarket === 'Coles' ? item : peers.find((p) => p.supermarket === 'Coles') || null;
     const woolProduct =
       item.supermarket === 'Woolworths'
         ? item
@@ -337,7 +334,9 @@
             callbacks: {
               label(ctx) {
                 const v = ctx.parsed.y;
-                return v == null ? `${ctx.dataset.label}: —` : `${ctx.dataset.label}: ${formatPriceLabel(v)}`;
+                return v == null
+                  ? `${ctx.dataset.label}: —`
+                  : `${ctx.dataset.label}: ${formatPriceLabel(v)}`;
               },
             },
           },
@@ -372,10 +371,7 @@
   }
 
   function getChartCanvas(card) {
-    return (
-      card.querySelector('.price-history-canvas') ||
-      card.querySelector('.watchlist-canvas')
-    );
+    return card.querySelector('.price-history-canvas') || card.querySelector('.watchlist-canvas');
   }
 
   function setChartStatus(card, message, isError = false) {
@@ -463,7 +459,7 @@
     } catch (err) {
       const fallback = buildFallbackPriceSeries(entry);
       if (fallback.some((s) => s.points?.length)) {
-        setChartStatus(card, 'Showing today\'s price — history builds over time.');
+        setChartStatus(card, "Showing today's price — history builds over time.");
         renderPriceChart(canvas, fallback, chartId);
       } else {
         setChartStatus(card, err.message || 'Could not load chart.', true);
@@ -548,9 +544,7 @@
       }
       const canvas = getChartCanvas(card);
       const watchEntry =
-        typeof loadWatchlist === 'function'
-          ? loadWatchlist().find((w) => w.id === chartId)
-          : null;
+        typeof loadWatchlist === 'function' ? loadWatchlist().find((w) => w.id === chartId) : null;
       const entry = watchEntry || { id: chartId };
       if (canvas && entry) {
         fetchPriceHistory({
@@ -743,9 +737,10 @@
 
     const opt = data.optimization || {};
     const rows = data.lineItems.map((line) => {
-      const label = typeof formatRequestLabel === 'function'
-        ? formatRequestLabel(line.request)
-        : line.request?.keyword || 'Item';
+      const label =
+        typeof formatRequestLabel === 'function'
+          ? formatRequestLabel(line.request)
+          : line.request?.keyword || 'Item';
       const wool = line.woolworthsLinePrice ?? line.woolworthsSingleStorePrice;
       const coles = line.colesLinePrice ?? line.colesSingleStorePrice;
       let note = '';
@@ -813,9 +808,7 @@
 
   async function fetchAndShowPageViews() {
     const apiRoot =
-      typeof API_BASE !== 'undefined' && API_BASE
-        ? API_BASE
-        : window.location?.origin || '';
+      typeof API_BASE !== 'undefined' && API_BASE ? API_BASE : window.location?.origin || '';
 
     if (!apiRoot) return;
 

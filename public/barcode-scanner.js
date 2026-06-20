@@ -196,10 +196,7 @@
 
     const backByLabel = cameras.find((cam) => {
       const label = String(cam.label || '').toLowerCase();
-      return (
-        /back|rear|environment|sau|wide/.test(label) &&
-        !/front|user|selfie|trước/.test(label)
-      );
+      return /back|rear|environment|sau|wide/.test(label) && !/front|user|selfie|trước/.test(label);
     });
     if (backByLabel) return backByLabel.id;
 
@@ -243,10 +240,7 @@
       return;
     }
 
-    setStatus(
-      'Không mở được camera. Thử tải lại trang hoặc tìm sản phẩm bằng tên.',
-      true
-    );
+    setStatus('Không mở được camera. Thử tải lại trang hoặc tìm sản phẩm bằng tên.', true);
   }
 
   /**
@@ -277,9 +271,7 @@
       for (const attempt of attempts) {
         try {
           const cameraConfig =
-            typeof attempt.getConfig === 'function'
-              ? await attempt.getConfig()
-              : attempt.getConfig;
+            typeof attempt.getConfig === 'function' ? await attempt.getConfig() : attempt.getConfig;
 
           await startWithCameraConfig(cameraConfig, scanConfig);
           setStatus('Đưa camera vào mã vạch trên bao bì sản phẩm');

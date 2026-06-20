@@ -2,15 +2,15 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 (async () => {
-  const context = await chromium.launchPersistentContext(
-    path.join(__dirname, 'user_data'),
-    { headless: false, viewport: { width: 1280, height: 900 } }
-  );
+  const context = await chromium.launchPersistentContext(path.join(__dirname, '..', 'user_data'), {
+    headless: false,
+    viewport: { width: 1280, height: 900 },
+  });
   const page = await context.newPage();
-  await page.goto(
-    'https://www.woolworths.com.au/shop/search/products?searchTerm=milk',
-    { waitUntil: 'domcontentloaded', timeout: 90000 }
-  );
+  await page.goto('https://www.woolworths.com.au/shop/search/products?searchTerm=milk', {
+    waitUntil: 'domcontentloaded',
+    timeout: 90000,
+  });
   await page.evaluate(() => window.scrollBy(0, 500));
   await page.waitForTimeout(8000);
 

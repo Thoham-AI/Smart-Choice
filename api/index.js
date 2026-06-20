@@ -11,8 +11,8 @@ const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const express = require('express');
-const axios   = require('axios');
-const cors    = require('cors');
+const axios = require('axios');
+const cors = require('cors');
 const { AsyncLocalStorage } = require('async_hooks');
 const OpenAI = require('openai');
 const stringSimilarity = require('string-similarity');
@@ -26,26 +26,22 @@ const TERMS_HTML_PATH = path.join(PUBLIC_DIR, 'terms', 'index.html');
 // ============================================================
 // 1. CẤU HÌNH HẰNG SỐ
 // ============================================================
-const RAPIDAPI_KEY =
-  process.env.RAPIDAPI_KEY || process.env.RAPID_API_KEY || '';
-/** Coles mobile app search API (barcode + keyword) — override via env in production if needed. */
-const COLES_MOBILE_API_KEY =
-  process.env.COLES_API_KEY || '046bc0d4-3854-481f-80dc-85f9e846503d';
-const COLES_MOBILE_API_SECRET =
-  process.env.COLES_API_SECRET || 'e6ab96ff-453b-45ba-a2be-ae8d7c12cadf';
-const COLES_MOBILE_SEARCH_URL =
-  'https://api.coles.com.au/customer/v1/coles/products/search';
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || process.env.RAPID_API_KEY || '';
+/** Coles mobile app search API (barcode + keyword) — set COLES_API_KEY / COLES_API_SECRET in .env */
+const COLES_MOBILE_API_KEY = String(process.env.COLES_API_KEY || '').trim();
+const COLES_MOBILE_API_SECRET = String(process.env.COLES_API_SECRET || '').trim();
+const COLES_MOBILE_SEARCH_URL = 'https://api.coles.com.au/customer/v1/coles/products/search';
 const BARCODE_DIRECT_API_TIMEOUT_MS = 8000;
 const BARCODE_NAME_LOOKUP_TIMEOUT_MS = 4000;
 const BARCODE_SCAN_ROUTE_MAX_MS = 28000;
 const BARCODE_STORE_LOOKUP_MAX_MS = 4000;
 const BARCODE_SCAN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const COLES_HOST      = 'coles-australia-full-catalog-pricing-intelligence-api.p.rapidapi.com';
+const COLES_HOST = 'coles-australia-full-catalog-pricing-intelligence-api.p.rapidapi.com';
 const WOOLWORTHS_HOST = 'woolworths-australia-product-category-api.p.rapidapi.com';
 /** Supported supermarkets for compare + AI cart. */
 const SUPPORTED_SUPERMARKETS = ['Coles', 'Woolworths'];
 
-const RESULT_LIMIT = 20;   // số sản phẩm tối đa mỗi siêu thị
+const RESULT_LIMIT = 20; // số sản phẩm tối đa mỗi siêu thị
 /** Khi không có cặp WW↔Coles, giới hạn hàng chỉ 1 siêu thị (tránh 20 dòng Coles-only). */
 const MAX_ORPHAN_STORE_ROWS = 10;
 const SIMILARITY_THRESHOLD = 0.65; // Ngưỡng sau khi đã tính điểm tổng hợp (tên + size + loại)
@@ -60,8 +56,8 @@ const COMPARE_API_MAX_RETRIES = 2;
 const COMPARE_ROUTE_MAX_MS = 55000;
 const AI_PARSE_TIMEOUT_MS = 12000;
 const AI_ANALYZE_ROUTE_MAX_MS = 65000;
-/** MongoDB: fail nhanh nếu Atlas/local không phản hồi (không chặn search). */
-const MONGO_CONNECT_TIMEOUT_MS = 2500;
+/** MongoDB: đủ thời gian cho Atlas local hit cache trước khi phải scrape. */
+const MONGO_CONNECT_TIMEOUT_MS = mongo.MONGO_CONNECT_TIMEOUT_MS;
 const API_CACHE_READ_TIMEOUT_MS = 5000;
 const API_CACHE_STALE_READ_MS = 2000;
 const MONGO_COOLDOWN_MS = 90 * 1000;
@@ -128,23 +124,18 @@ const openaiClient = process.env.OPENAI_API_KEY
   : null;
 
 // ============================================================
-// 1b. MONGODB – API CACHE (single application database: smartchoice)
+// 1b. MONGODB – API CACHE (single application database: shoppingsmart)
 // ============================================================
 const MONGODB_URI = mongo.getUri();
 const API_CACHE_COLLECTION = 'api_cache';
 /** Normalized search hits — queried by backend matcher (not OpenAI). */
 const PRODUCTS_COLLECTION = 'products';
-const FRESH_PRODUCE_ALLOWED_DEPARTMENTS = [
-  'Fruit & Veg',
-  'Produce',
-  'Fresh',
-];
+const FRESH_PRODUCE_ALLOWED_DEPARTMENTS = ['Fruit & Veg', 'Produce', 'Fresh'];
 const FRESH_PRODUCE_DEPARTMENT_EXCLUSION_RE =
   /health\s*(?:&|and)?\s*beauty|beauty|cosmetics?|baby|household|pet|pets|animals?|sport|sports|fitness|gym/i;
 const FRESH_PRODUCE_NAME_EXCLUSION_RE =
   /soap|juice|drink|aloe|arizona|pickled|mix|candy|pack|mask|sheet|cream|lotion|scrub|gel|shampoo|conditioner|skincare|wipes|essential oil|exercise|exerciser|gripper|strengthener|trainer|forearm|vest|weighted|strap|straps|shoulder|breathable|running|hiit|gym|iron sand|sausage|sausages|pork|beef|chicken|meat|cat|cats|dog|dogs|pet|pets|pipette|pipettes|revolution|flea|worm|tick/i;
-const FRESH_PRODUCE_REAL_UNIT_SIGNAL_RE =
-  /\b(?:kg|whole|cut|half|quarter|each|pack of|per)\b/i;
+const FRESH_PRODUCE_REAL_UNIT_SIGNAL_RE = /\b(?:kg|whole|cut|half|quarter|each|pack of|per)\b/i;
 const FRESH_PRODUCE_PROCESSED_DRINK_RE =
   /\b(?:water|juice|drink|can|soda|sparkling|powder|beverage)\b/i;
 /**
@@ -384,9 +375,7 @@ function departmentAllowedForFreshProduce(department) {
 }
 
 function productHasExcludedFreshProduceDepartment(product, department) {
-  const labels = Array.isArray(product?.categoryLabels)
-    ? product.categoryLabels.join(' ')
-    : '';
+  const labels = Array.isArray(product?.categoryLabels) ? product.categoryLabels.join(' ') : '';
   const haystack = [
     department,
     product?.department,
@@ -568,9 +557,7 @@ async function findBestProductInMongo(supermarket, listItem) {
   await ensureProductsIndexes();
 
   const filter = buildMongoProductQueryFilters(listItem, supermarket);
-  const docs = await collection
-    .find(filter, { sort: { price: 1 }, limit: RESULT_LIMIT })
-    .toArray();
+  const docs = await collection.find(filter, { sort: { price: 1 }, limit: RESULT_LIMIT }).toArray();
   const products = docs.map((doc) => doc?.payload).filter(Boolean);
   const eligible = filterProductsByParsedLineMongoRules(products, listItem);
   if (!eligible.length) return null;
@@ -606,10 +593,7 @@ function withTimeout(promise, ms, label = 'operation') {
   return Promise.race([
     promise,
     new Promise((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`${label} timed out after ${ms}ms`)),
-        ms
-      );
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
     }),
   ]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -839,13 +823,7 @@ function buildUnifiedChartData(colesPoints, woolPoints) {
  * Append or update today's price in the month bucket (Bucket Pattern upsert).
  * One document per watchId per YYYY-MM — both chains live in the same bucket.
  */
-async function recordPriceHistoryPoint(
-  watchId,
-  supermarket,
-  price,
-  productName = '',
-  meta = {}
-) {
+async function recordPriceHistoryPoint(watchId, supermarket, price, productName = '', meta = {}) {
   const collection = getPriceHistoryCollection();
   if (!collection) return;
 
@@ -1028,17 +1006,15 @@ function parseUserLocationFromRequest(req) {
     req.body?.lon
   );
 
-  const postcode = readString(
-    req.headers['x-postcode'],
-    req.query?.postcode,
-    req.body?.postcode
-  );
+  const postcode = readString(req.headers['x-postcode'], req.query?.postcode, req.body?.postcode);
   const state = normalizeAustralianState(
     readString(req.headers['x-state'], req.query?.state, req.body?.state)
   );
 
   if (latitude != null && longitude != null) {
-    const sourceHeader = String(req.headers['x-location-source'] || '').trim().toLowerCase();
+    const sourceHeader = String(req.headers['x-location-source'] || '')
+      .trim()
+      .toLowerCase();
     const source =
       sourceHeader === 'gps' ||
       sourceHeader === 'default' ||
@@ -1083,13 +1059,13 @@ function normalizeAustralianPostcode(value) {
 function inferLocationFromPostcodePrefix(postcode) {
   const prefix = postcode.charAt(0);
   const stateByPrefix = {
-    '0': 'NT',
-    '2': 'NSW',
-    '3': 'VIC',
-    '4': 'QLD',
-    '5': 'SA',
-    '6': 'WA',
-    '7': 'TAS',
+    0: 'NT',
+    2: 'NSW',
+    3: 'VIC',
+    4: 'QLD',
+    5: 'SA',
+    6: 'WA',
+    7: 'TAS',
   };
   const state = stateByPrefix[prefix] || 'NSW';
   const centroid = AU_STATE_CENTROIDS[state];
@@ -1210,7 +1186,9 @@ function getRequestStoreOverrides() {
 
 /** Active coordinates for the current HTTP request (AsyncLocalStorage). */
 function getRequestLocation() {
-  return requestLocationContext.getStore()?.location || { ...SYDNEY_DEFAULT_LOCATION, state: 'NSW' };
+  return (
+    requestLocationContext.getStore()?.location || { ...SYDNEY_DEFAULT_LOCATION, state: 'NSW' }
+  );
 }
 
 function buildLocationSegment(location) {
@@ -1220,7 +1198,9 @@ function buildLocationSegment(location) {
 
 function buildApiCacheId(supermarket, keyword, location) {
   const locKey = buildLocationSegment(location);
-  return `${supermarket}:${String(keyword || '').trim().toLowerCase()}:${locKey}`;
+  return `${supermarket}:${String(keyword || '')
+    .trim()
+    .toLowerCase()}:${locKey}`;
 }
 
 async function readApiCache(supermarket, keyword, location, { allowStale = false } = {}) {
@@ -1244,11 +1224,7 @@ async function readApiCache(supermarket, keyword, location, { allowStale = false
     return null;
   }
 
-  if (
-    !allowStale &&
-    doc.expiresAt &&
-    doc.expiresAt <= new Date()
-  ) {
+  if (!allowStale && doc.expiresAt && doc.expiresAt <= new Date()) {
     return null;
   }
   // Empty arrays are treated as cache miss so a bad write does not block forever.
@@ -1273,12 +1249,7 @@ async function readApiCacheWithFallback(supermarket, keyword, location, options 
     loc.latitude === SYDNEY_DEFAULT_LOCATION.latitude &&
     loc.longitude === SYDNEY_DEFAULT_LOCATION.longitude;
   if (!isDefaultLoc) {
-    const sydneyHit = await readApiCache(
-      supermarket,
-      keyword,
-      SYDNEY_DEFAULT_LOCATION,
-      options
-    );
+    const sydneyHit = await readApiCache(supermarket, keyword, SYDNEY_DEFAULT_LOCATION, options);
     if (sydneyHit != null) {
       console.log(`  💾 ${supermarket} cache hit (Sydney fallback): "${keyword}"`);
       return sydneyHit;
@@ -1305,11 +1276,7 @@ async function readApiCacheWithFallback(supermarket, keyword, location, options 
   if (isApiCacheBeforeCurrentPriceCycle(doc.updatedAt)) {
     return null;
   }
-  if (
-    !options.allowStale &&
-    doc.expiresAt &&
-    doc.expiresAt <= new Date()
-  ) {
+  if (!options.allowStale && doc.expiresAt && doc.expiresAt <= new Date()) {
     return null;
   }
   if (Array.isArray(doc.payload) && doc.payload.length === 0) return null;
@@ -1355,7 +1322,7 @@ async function initMongoForLocalStartup() {
 // 2. KHỞI TẠO EXPRESS
 // ============================================================
 const app = express();
-app.use(cors());                       // Cho phép front-end trên origin khác gọi vào
+app.use(cors()); // Cho phép front-end trên origin khác gọi vào
 app.use(express.json({ limit: '32kb' }));
 // Attach parsed user coordinates to the async context for downstream RapidAPI calls.
 app.use(async (req, res, next) => {
@@ -1512,9 +1479,7 @@ function parseQuantityFromText(text) {
   }
 
   // Gói nhiều: 2x125g, 6 x 330ml
-  const multiMatch = source.match(
-    /(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*(kg|g|ml|l)\b/i
-  );
+  const multiMatch = source.match(/(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*(kg|g|ml|l)\b/i);
   if (multiMatch) {
     const count = parseInt(multiMatch[1], 10);
     const value = parseFloat(multiMatch[2]);
@@ -1796,10 +1761,7 @@ function resolveWoolworthsProductUrl(raw, options = {}) {
   }
 
   const barcodeFallback =
-    options.scannedBarcode ||
-    options.searchTerm ||
-    [...collectBarcodesFromRaw(raw)][0] ||
-    '';
+    options.scannedBarcode || options.searchTerm || [...collectBarcodesFromRaw(raw)][0] || '';
 
   if (barcodeFallback) {
     return buildWoolworthsSearchUrl(barcodeFallback);
@@ -1876,9 +1838,7 @@ function buildDisplayName(raw) {
   ).trim();
 
   const brand = String(raw.brand || raw.brand_name || '').trim();
-  let size = String(
-    raw.size || raw.package_size || raw.pack_size || raw.unit_size || ''
-  ).trim();
+  let size = String(raw.size || raw.package_size || raw.pack_size || raw.unit_size || '').trim();
 
   if (!size) {
     size = extractSizeFromSlug(raw.slug);
@@ -2029,13 +1989,9 @@ function deepScanBarcodeDigits(value, found = new Set(), depth = 0) {
 }
 
 function logBarcodeRawSample(supermarket, rawList, limit = 3) {
+  if (!MATCH_DEBUG) return;
   const sample = rawList.slice(0, limit).map((raw, idx) => {
-    const name =
-      raw?.name ||
-      raw?.productName ||
-      raw?.title ||
-      raw?.product?.name ||
-      '(no name)';
+    const name = raw?.name || raw?.productName || raw?.title || raw?.product?.name || '(no name)';
     const codes = [...collectBarcodesFromRaw(raw), ...deepScanBarcodeDigits(raw)];
     return `#${idx + 1} "${String(name).slice(0, 60)}" codes=[${[...new Set(codes)].slice(0, 4).join(', ')}]`;
   });
@@ -2114,17 +2070,15 @@ function findProductByBarcodeWithFallback(rawList, barcode, supermarket) {
 async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, options = {}) {
   const productName = String(options.productName || '').trim();
   const isNameSearch = Boolean(productName);
-  const variants = isNameSearch
-    ? [productName]
-    : barcodeSearchVariants(barcode).slice(0, 2);
+  const variants = isNameSearch ? [productName] : barcodeSearchVariants(barcode).slice(0, 2);
 
   const matchRawList = (rawList, sourceLabel) => {
     if (!Array.isArray(rawList) || !rawList.length) return null;
 
-    console.log(
-      `  📷 ${supermarket} barcode ${sourceLabel} → ${rawList.length} result(s)`
-    );
-    logBarcodeRawSample(supermarket, rawList);
+    if (MATCH_DEBUG) {
+      console.log(`  📷 ${supermarket} barcode ${sourceLabel} → ${rawList.length} result(s)`);
+      logBarcodeRawSample(supermarket, rawList);
+    }
 
     const { product, matchKind } = isNameSearch
       ? findProductByNameInRawList(rawList, productName, supermarket, barcode)
@@ -2132,19 +2086,17 @@ async function fetchBarcodeProductForStore(supermarket, barcode, storeIds, optio
 
     if (!product) return null;
 
-    console.log(
-      `  📷 ${supermarket} barcode HIT (${sourceLabel}/${matchKind}): "${product.name}" @ $${product.price ?? 'n/a'}`
-    );
+    if (MATCH_DEBUG) {
+      console.log(
+        `  📷 ${supermarket} barcode HIT (${sourceLabel}/${matchKind}): "${product.name}" @ $${product.price ?? 'n/a'}`
+      );
+    }
     return { product, rawList, matchKind: `${sourceLabel}_${matchKind}`, error: null };
   };
 
   // Direct supermarket APIs only — skip slow RapidAPI path for barcode scans.
   for (const query of variants) {
-    const directRaw = await fetchDirectStoreRawListForBarcode(
-      supermarket,
-      query,
-      storeIds
-    );
+    const directRaw = await fetchDirectStoreRawListForBarcode(supermarket, query, storeIds);
     const hit = matchRawList(directRaw, isNameSearch ? 'direct_name' : 'direct_api');
     if (hit) {
       const location = getRequestLocation();
@@ -2222,9 +2174,7 @@ async function tryReadBarcodeScanCache(barcode) {
         if (doc.expiresAt && new Date(doc.expiresAt) <= new Date()) return null;
 
         const colesItem = doc.coles ? { ...doc.coles, supermarket: 'Coles' } : null;
-        const woolItem = doc.woolworths
-          ? { ...doc.woolworths, supermarket: 'Woolworths' }
-          : null;
+        const woolItem = doc.woolworths ? { ...doc.woolworths, supermarket: 'Woolworths' } : null;
         if (!colesItem && !woolItem) return null;
 
         console.log(`  💾 Barcode cache hit: ${normalized}`);
@@ -2296,13 +2246,9 @@ async function seedScannedBarcodeToMongo(barcode, colesItem, woolItem) {
       productId: item.productId || null,
       barcode: normalized,
     };
-    seeds.push(
-      recordPriceHistoryPoint(watchId, supermarket, item.price, item.name, meta)
-    );
+    seeds.push(recordPriceHistoryPoint(watchId, supermarket, item.price, item.name, meta));
     if (item.productId) {
-      seeds.push(
-        recordPriceHistoryPoint(item.productId, supermarket, item.price, item.name, meta)
-      );
+      seeds.push(recordPriceHistoryPoint(item.productId, supermarket, item.price, item.name, meta));
     }
   };
 
@@ -2340,9 +2286,7 @@ function buildBarcodeScanResponse(
   const woolworthsItems = woolItem ? [woolItem] : [];
   const combined = [...colesItems, ...woolworthsItems];
   const directPair = buildDirectComparePair(woolItem, colesItem);
-  const similarPairs = directPair
-    ? [directPair]
-    : buildSimilarPairs(woolworthsItems, colesItems);
+  const similarPairs = directPair ? [directPair] : buildSimilarPairs(woolworthsItems, colesItems);
 
   return {
     items: combined,
@@ -2457,9 +2401,7 @@ function compareStoresForCheaper(products) {
 
 /** Woolworths vs Coles pair comparison (similar-product rows). */
 function compareProductsForCheaper(woolworthsItem, colesItem) {
-  return compareStoresForCheaper(
-    [woolworthsItem, colesItem].filter(Boolean)
-  );
+  return compareStoresForCheaper([woolworthsItem, colesItem].filter(Boolean));
 }
 
 /** Ghép cặp so sánh khi quét barcode trúng cả 2 siêu thị */
@@ -2893,13 +2835,7 @@ const FRESH_PRODUCE_MIN_WEIGHT_RATIO = 0.35;
 const MICRO_PACK_MAX_GRAMS = 100;
 
 /** Tín hiệu ý định trái/rau tươi trong tên hoặc query. */
-const FRESH_PRODUCE_SIGNAL_KEYWORDS = [
-  'fresh',
-  'cucumber',
-  'watermelon',
-  'vegetable',
-  'fruit',
-];
+const FRESH_PRODUCE_SIGNAL_KEYWORDS = ['fresh', 'cucumber', 'watermelon', 'vegetable', 'fruit'];
 
 /** Từ khóa cấm khi ghép với trái/rau tươi (xà phòng, kẹo, v.v.). */
 const NON_FOOD_PRODUCT_BLACKLIST_KEYWORDS = [
@@ -3033,7 +2969,9 @@ function nameSuggestsConveniencePreCut(name, product = null) {
   if (nameNormHasAnyHint(nameNorm, CONVENIENCE_PRECUT_HINTS)) return true;
   if (/\b(tray|wedges?|slices?)\b/.test(nameNorm) && isFreshFoodCategory(name)) return true;
   const grams = getProductWeightGrams(name, product);
-  return grams != null && grams > 0 && grams <= 800 && /\b(tray|wedge|slice|finger|cut)\b/.test(nameNorm);
+  return (
+    grams != null && grams > 0 && grams <= 800 && /\b(tray|wedge|slice|finger|cut)\b/.test(nameNorm)
+  );
 }
 
 /** Một bên muối/ngâm/hộp — bên kia tươi sống → không ghép. */
@@ -3161,7 +3099,10 @@ function productConflictsWithWholeProduceRequest(name, listItem = {}) {
   if (frac.penalizeMatch) return true;
   if (nameSuggestsConveniencePreCut(name)) return true;
   const nameNorm = normalizeNameForMatch(name);
-  if (/\b(quarter|half)\b/.test(nameNorm) && /\b(watermelon|melon|pineapple|pumpkin)\b/.test(nameNorm)) {
+  if (
+    /\b(quarter|half)\b/.test(nameNorm) &&
+    /\b(watermelon|melon|pineapple|pumpkin)\b/.test(nameNorm)
+  ) {
     return true;
   }
   if (/\b(wedge|fingers)\b/.test(nameNorm) && /\b(watermelon|melon)\b/.test(nameNorm)) {
@@ -3213,7 +3154,9 @@ function isFreshProduceCandidateForIntent(name, product, keyword, listItem = {})
 }
 
 function normalizeCategoryBucketLabel(bucket) {
-  const raw = String(bucket || '').trim().toLowerCase();
+  const raw = String(bucket || '')
+    .trim()
+    .toLowerCase();
   if (!raw) return null;
   if (Object.values(CATEGORY_BUCKETS).includes(raw)) return raw;
   return CATEGORY_BUCKET_ALIASES[raw] || raw;
@@ -3260,10 +3203,7 @@ function productInNonFoodDepartment(product, name) {
   const bucket = normalizeCategoryBucketLabel(
     product?.categoryBucket || resolveProductBucket(product || { name })
   );
-  return (
-    bucket === CATEGORY_BUCKETS.HEALTH_BEAUTY ||
-    bucket === CATEGORY_BUCKETS.CONFECTIONERY
-  );
+  return bucket === CATEGORY_BUCKETS.HEALTH_BEAUTY || bucket === CATEGORY_BUCKETS.CONFECTIONERY;
 }
 
 function nameLooksLikePantryProduceBrandTrap(displayName) {
@@ -3279,7 +3219,10 @@ function productInFreshProduceContext(name, product) {
   if (nameSuggestsNonFoodProductTitle(name) || productInNonFoodDepartment(product, name)) {
     return false;
   }
-  if (nameLooksLikePantryProduceBrandTrap(name) || nameSuggestsShelfStableProducePack(name, product)) {
+  if (
+    nameLooksLikePantryProduceBrandTrap(name) ||
+    nameSuggestsShelfStableProducePack(name, product)
+  ) {
     return false;
   }
   const bucket = normalizeCategoryBucketLabel(
@@ -3440,8 +3383,7 @@ function keywordWordMatchesName(nameNorm, word) {
 function shortKeywordSynonymPhraseMatches(nameNorm, words) {
   return GENERIC_KEYWORD_SYNONYM_PHRASES.some((entry) => {
     const queryMatches =
-      entry.query.length === words.length &&
-      entry.query.every((word) => words.includes(word));
+      entry.query.length === words.length && entry.query.every((word) => words.includes(word));
     if (!queryMatches) return false;
 
     return entry.alternatives.some((phrase) =>
@@ -3559,7 +3501,10 @@ function buildListItemFromSearchText(searchText, coreKeyword) {
 }
 
 function normalizeSearchQuery(q) {
-  return String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return String(q || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Có thuộc nhóm thực phẩm tươi không */
@@ -3609,9 +3554,7 @@ function getPackWeightKgFromProduct(displayName, raw = {}) {
     return Number((sizeInfo.grams / 1000).toFixed(4));
   }
 
-  const fromSizeField = parseQuantityFromText(
-    raw.size || raw.package_size || raw.pack_size || ''
-  );
+  const fromSizeField = parseQuantityFromText(raw.size || raw.package_size || raw.pack_size || '');
   if (fromSizeField.amountInBaseUnit && fromSizeField.baseUnit === 'g') {
     return Number((fromSizeField.amountInBaseUnit / 1000).toFixed(4));
   }
@@ -3683,15 +3626,11 @@ function extractPricePerKgFromApiFields(raw, displayName) {
   const perKgLabel = /\b(per\s*kg|\/\s*kg|kg\s*each)\b/i.test(metaText);
   if (perKgLabel) {
     const fromCup =
-      parsePrice(raw.cupPrice) ??
-      parsePrice(raw.CupPrice) ??
-      parsePrice(raw.price_per_unit_price);
+      parsePrice(raw.cupPrice) ?? parsePrice(raw.CupPrice) ?? parsePrice(raw.price_per_unit_price);
     if (fromCup != null) return fromCup;
   }
 
-  const dollarMatch = String(metaText).match(
-    /\$\s*([\d]+(?:\.\d+)?)\s*(?:\/|per)\s*kg/i
-  );
+  const dollarMatch = String(metaText).match(/\$\s*([\d]+(?:\.\d+)?)\s*(?:\/|per)\s*kg/i);
   if (dollarMatch) return parsePrice(dollarMatch[1]);
 
   return null;
@@ -3740,15 +3679,33 @@ function detectFractionalUnit(productName) {
   }
 
   if (/\bquarter\b/i.test(lower) || /\b1\/4\b/.test(lower)) {
-    return { isWhole: false, isFractional: true, multiplier: 4, type: 'quarter', penalizeMatch: true };
+    return {
+      isWhole: false,
+      isFractional: true,
+      multiplier: 4,
+      type: 'quarter',
+      penalizeMatch: true,
+    };
   }
 
   if (/\bthird\b/i.test(lower) || /\b1\/3\b/.test(lower)) {
-    return { isWhole: false, isFractional: true, multiplier: 3, type: 'third', penalizeMatch: true };
+    return {
+      isWhole: false,
+      isFractional: true,
+      multiplier: 3,
+      type: 'third',
+      penalizeMatch: true,
+    };
   }
 
   if (/\bslices?\b/i.test(lower)) {
-    return { isWhole: false, isFractional: true, multiplier: 1, type: 'slices', penalizeMatch: true };
+    return {
+      isWhole: false,
+      isFractional: true,
+      multiplier: 1,
+      type: 'slices',
+      penalizeMatch: true,
+    };
   }
 
   return { isWhole: false, isFractional: false, multiplier: 1, type: null, penalizeMatch: false };
@@ -3805,7 +3762,8 @@ function estimateEachFruitWeightKg(product, listItem) {
   if (!match) return null;
 
   const nameNorm = normalizeNameForMatch(product?.name || '');
-  const looksEach = /\beach\b|\bea\b/.test(nameNorm) || !/\b\d+(?:\.\d+)?\s*(?:kg|g)\b/.test(nameNorm);
+  const looksEach =
+    /\beach\b|\bea\b/.test(nameNorm) || !/\b\d+(?:\.\d+)?\s*(?:kg|g)\b/.test(nameNorm);
   return looksEach ? match.kg : null;
 }
 
@@ -3817,8 +3775,7 @@ function applyListItemPricing(product, listItem) {
   const targetWeightKg = getTargetWeightKg(listItem);
   const keyword = listItem.keyword || '';
 
-  const packShelfPrice =
-    product.packShelfPrice != null ? product.packShelfPrice : product.price;
+  const packShelfPrice = product.packShelfPrice != null ? product.packShelfPrice : product.price;
 
   let pricePerKg = product.pricePerKg;
   if (pricePerKg == null && targetWeightKg != null) {
@@ -3899,11 +3856,8 @@ function applyWeightContextToProduct(product, listItem) {
  */
 async function fetchStoreProducts(supermarket, searchText, listItem = null, opts = {}) {
   const fast = opts.fast === true;
-  const coreKeyword = stripWeightFromText(
-    listItem?.clean_query || listItem?.keyword || searchText
-  );
-  const weightListItem =
-    listItem || buildListItemFromSearchText(searchText, coreKeyword);
+  const coreKeyword = stripWeightFromText(listItem?.clean_query || listItem?.keyword || searchText);
+  const weightListItem = listItem || buildListItemFromSearchText(searchText, coreKeyword);
   const matchListItem = listItem || weightListItem;
 
   const runSearch = async (query) => {
@@ -3924,8 +3878,7 @@ async function fetchStoreProducts(supermarket, searchText, listItem = null, opts
   let items = [];
   let usedFallback = false;
   const produceIntent =
-    matchListItem?.is_fresh_produce === true ||
-    isProduceSearchIntent(coreKeyword, matchListItem);
+    matchListItem?.is_fresh_produce === true || isProduceSearchIntent(coreKeyword, matchListItem);
   const maxQueries = fast && !produceIntent ? 1 : queries.length;
 
   const hasAcceptableMatch = () => {
@@ -3996,7 +3949,8 @@ function normalizeItem(raw, supermarket, opts = {}) {
     parsePrice(raw.regular_price);
 
   // Giá hiển thị: ưu tiên giá khuyến mãi nếu thấp hơn giá gốc
-  let price = listedPrice ?? discountPrice ?? parsePrice(raw.selling_price) ?? parsePrice(raw.final_price);
+  let price =
+    listedPrice ?? discountPrice ?? parsePrice(raw.selling_price) ?? parsePrice(raw.final_price);
   let originalPrice = null;
   let isOnSpecial =
     raw.is_on_special === true ||
@@ -4038,11 +3992,11 @@ function normalizeItem(raw, supermarket, opts = {}) {
     '';
 
   const packShelfPrice = price;
-  const { pricePerKg, packWeightKg, source: pricePerKgSource } = resolvePricePerKg(
-    raw,
-    name,
-    packShelfPrice
-  );
+  const {
+    pricePerKg,
+    packWeightKg,
+    source: pricePerKgSource,
+  } = resolvePricePerKg(raw, name, packShelfPrice);
   const isPerKgPricing = pricePerKg != null;
 
   if (!name || (packShelfPrice == null && pricePerKg == null)) return null;
@@ -4061,9 +4015,7 @@ function normalizeItem(raw, supermarket, opts = {}) {
   const barcodes = [...barcodeSet];
   const scannedBarcode = opts.scannedBarcode ? normalizeBarcode(opts.scannedBarcode) : '';
   const barcode =
-    barcodes[0] ||
-    (opts.barcodeVerified && scannedBarcode ? scannedBarcode : null) ||
-    null;
+    barcodes[0] || (opts.barcodeVerified && scannedBarcode ? scannedBarcode : null) || null;
 
   const categoryMeta = buildCategoryMetaFromRaw(raw, name);
 
@@ -4405,11 +4357,7 @@ function haystackSuggestsDrinks(haystack, displayName) {
   }
 
   const nameNorm = normalizeNameForMatch(displayName);
-  if (
-    /\b(juice|cordial|soft drink|soda|cola|lemonade|beverage|h2juice|drink)\b/.test(
-      nameNorm
-    )
-  ) {
+  if (/\b(juice|cordial|soft drink|soda|cola|lemonade|beverage|h2juice|drink)\b/.test(nameNorm)) {
     return true;
   }
 
@@ -4417,8 +4365,7 @@ function haystackSuggestsDrinks(haystack, displayName) {
   const sizeInfo = extractSizeInfo(displayName);
   const hasBottleVolume =
     sizeInfo.grams != null &&
-    (/\b\d+(?:\.\d+)?\s*ml\b/i.test(displayName) ||
-      /\b\d+(?:\.\d+)?\s*l\b/i.test(displayName));
+    (/\b\d+(?:\.\d+)?\s*ml\b/i.test(displayName) || /\b\d+(?:\.\d+)?\s*l\b/i.test(displayName));
   if (hasBottleVolume && !looksLikeLooseFreshProduceName(displayName)) {
     return true;
   }
@@ -4470,7 +4417,10 @@ function nameSuggestsProcessedNotCoreIngredient(displayName, keyword) {
     return false;
   }
 
-  if (searchIntentSuggestsRawIngredient(keyword) && nameSuggestsProcessedPreparedFood(displayName)) {
+  if (
+    searchIntentSuggestsRawIngredient(keyword) &&
+    nameSuggestsProcessedPreparedFood(displayName)
+  ) {
     return true;
   }
 
@@ -4524,8 +4474,7 @@ function nameSuggestsPackagedDrink(displayName) {
   const sizeInfo = extractSizeInfo(displayName);
   const hasBottleVolume =
     sizeInfo.grams != null &&
-    (/\b\d+(?:\.\d+)?\s*ml\b/i.test(displayName) ||
-      /\b\d+(?:\.\d+)?\s*l\b/i.test(displayName));
+    (/\b\d+(?:\.\d+)?\s*ml\b/i.test(displayName) || /\b\d+(?:\.\d+)?\s*l\b/i.test(displayName));
 
   if (!hasBottleVolume) return false;
 
@@ -4541,7 +4490,9 @@ function classifyCategoryBucket(labels, displayName, raw = {}) {
   const nameNorm = normalizeNameForMatch(displayName);
 
   if (nameSuggestsNonFoodProductTitle(displayName) || haystackSuggestsNonFoodDepartment(haystack)) {
-    if (/\b(soap|dettol|shampoo|body wash|toiletries|hygiene|cleanser)\b/i.test(nameNorm + haystack)) {
+    if (
+      /\b(soap|dettol|shampoo|body wash|toiletries|hygiene|cleanser)\b/i.test(nameNorm + haystack)
+    ) {
       return CATEGORY_BUCKETS.HEALTH_BEAUTY;
     }
     if (/\b(household|cleaning|laundry|detergent|home care)\b/i.test(haystack)) {
@@ -4626,7 +4577,9 @@ function classifyCategoryBucket(labels, displayName, raw = {}) {
 function resolveProductBucket(productOrName, rawFallback = null) {
   if (productOrName && typeof productOrName === 'object') {
     if (productOrName.categoryBucket) {
-      return normalizeCategoryBucketLabel(productOrName.categoryBucket) || productOrName.categoryBucket;
+      return (
+        normalizeCategoryBucketLabel(productOrName.categoryBucket) || productOrName.categoryBucket
+      );
     }
     return classifyCategoryBucket(
       productOrName.categoryLabels || [],
@@ -4678,10 +4631,8 @@ function areProductCategoriesCompatible(productA, productB) {
     return false;
   }
 
-  const drinkA =
-    bucketA === CATEGORY_BUCKETS.DRINKS || nameSuggestsPackagedDrink(nameA);
-  const drinkB =
-    bucketB === CATEGORY_BUCKETS.DRINKS || nameSuggestsPackagedDrink(nameB);
+  const drinkA = bucketA === CATEGORY_BUCKETS.DRINKS || nameSuggestsPackagedDrink(nameA);
+  const drinkB = bucketB === CATEGORY_BUCKETS.DRINKS || nameSuggestsPackagedDrink(nameB);
   const freshA = productInFreshProduceContext(nameA, productA);
   const freshB = productInFreshProduceContext(nameB, productB);
 
@@ -4787,8 +4738,7 @@ function isProductEligibleForSearchIntent(product, keyword, listItem = {}) {
     if (bucket === CATEGORY_BUCKETS.UNKNOWN) {
       return (
         looksLikeLooseFreshProduceName(name) ||
-        (productNameMatchesProduceKeyword(name, keyword) &&
-          !nameSuggestsNonFoodProductTitle(name))
+        (productNameMatchesProduceKeyword(name, keyword) && !nameSuggestsNonFoodProductTitle(name))
       );
     }
     return areCategoryBucketsCompatible(intent, bucket);
@@ -5062,11 +5012,14 @@ function isShallowProduceTokenMatch(nameA, nameB) {
   if (!produceShared.length) return false;
 
   const sim = stringSimilarity.compareTwoStrings(normA, normB);
-  return produceShared.length <= 1 && shared.length <= 2 && sim < MIN_FRESH_SHALLOW_TOKEN_SIMILARITY;
+  return (
+    produceShared.length <= 1 && shared.length <= 2 && sim < MIN_FRESH_SHALLOW_TOKEN_SIMILARITY
+  );
 }
 
 function logMatchDecision(woolName, colesName, score, detail) {
-  const tag = typeof score === 'number' && score >= SMART_MATCH_MIN_PAIR_SCORE ? 'ACCEPT' : 'REJECT';
+  const tag =
+    typeof score === 'number' && score >= SMART_MATCH_MIN_PAIR_SCORE ? 'ACCEPT' : 'REJECT';
   const scoreText = typeof score === 'number' ? score.toFixed(2) : 'N/A';
   console.log(
     `[Match:${tag}] score=${scoreText} | WW="${woolName}" ↔ Coles="${colesName}" | ${detail}`
@@ -5157,10 +5110,7 @@ function checkSizeCompatibility(nameA, nameB, productA = null, productB = null) 
     return 'ok';
   }
 
-  if (
-    (a.grams != null && b.grams == null) ||
-    (a.grams == null && b.grams != null)
-  ) {
+  if ((a.grams != null && b.grams == null) || (a.grams == null && b.grams != null)) {
     return 'mismatch_one_sided';
   }
 
@@ -5178,20 +5128,14 @@ function scoreProductPair(woolInput, colesInput) {
   const colesNorm = normalizeNameForMatch(colesName);
   if (!woolNorm || !colesNorm) return 0;
 
-  const guardrailReason = evaluatePairingGuardrails(
-    woolName,
-    woolInput,
-    colesName,
-    colesInput
-  );
+  const guardrailReason = evaluatePairingGuardrails(woolName, woolInput, colesName, colesInput);
   if (guardrailReason) return 0;
 
   // Drinks ↔ Fresh (vd: H2juice Watermelon vs Seedless Watermelon) → không ghép
   if (!areProductCategoriesCompatible(woolInput, colesInput)) return 0;
 
   if (
-    nameSuggestsProcessedPreparedFood(woolName) !==
-    nameSuggestsProcessedPreparedFood(colesName)
+    nameSuggestsProcessedPreparedFood(woolName) !== nameSuggestsProcessedPreparedFood(colesName)
   ) {
     return 0;
   }
@@ -5216,8 +5160,7 @@ function scoreProductPair(woolInput, colesInput) {
   let score = nameSim;
 
   if (sizeStatus === 'mismatch_one_sided') {
-    const freshLoose =
-      isFreshFoodCategory(woolName) || isFreshFoodCategory(colesName);
+    const freshLoose = isFreshFoodCategory(woolName) || isFreshFoodCategory(colesName);
     score *= freshLoose ? 0.9 : 0.72;
   }
 
@@ -5237,11 +5180,7 @@ function scoreProductForKeyword(
 ) {
   const productRef = product || { name: productName };
   const displayName = productRef.name || productName;
-  const fullShortKeywordMatch = productNameHasFullShortKeywordMatch(
-    displayName,
-    keyword,
-    listItem
-  );
+  const fullShortKeywordMatch = productNameHasFullShortKeywordMatch(displayName, keyword, listItem);
 
   if (fullShortKeywordMatch && !isProduceSearchIntent(keyword, listItem)) {
     const productNorm = normalizeNameForMatch(displayName);
@@ -5255,10 +5194,7 @@ function scoreProductForKeyword(
   if (nameSuggestsNonFoodProductTitle(displayName)) return 0;
   if (productInNonFoodDepartment(productRef, displayName)) return 0;
 
-  if (
-    !fullShortKeywordMatch &&
-    nameSuggestsProcessedNotCoreIngredient(displayName, keyword)
-  ) {
+  if (!fullShortKeywordMatch && nameSuggestsProcessedNotCoreIngredient(displayName, keyword)) {
     return 0;
   }
   if (!isFreshProduceCandidateForIntent(displayName, productRef, keyword, listItem)) return 0;
@@ -5300,7 +5236,9 @@ function scoreProductForKeyword(
   }
 
   if (isFreshFoodCategory(displayName) && isFreshFoodCategory(coreKeyword)) {
-    const coreWords = stripWeightFromText(coreKeyword).split(' ').filter((w) => w.length > 2);
+    const coreWords = stripWeightFromText(coreKeyword)
+      .split(' ')
+      .filter((w) => w.length > 2);
     const allInProduct = coreWords.length > 0 && coreWords.every((w) => productNorm.includes(w));
     if (allInProduct) score = Math.max(score, 0.52);
   }
@@ -5356,19 +5294,13 @@ function pickBestProductMatch(products, keyword, listItem = {}) {
 
   const scored = candidates
     .filter((product) => productNameContainsSearchKeywords(product.name, keyword, listItem))
-    .filter((product) =>
-      isGenuineFreshProduceForIntent(product.name, product, keyword, listItem)
-    )
+    .filter((product) => isGenuineFreshProduceForIntent(product.name, product, keyword, listItem))
     .map((product) => ({
       product,
       score: scoreProductForMatching(product, keyword, listItem),
     }));
 
-  const { product: best, score: bestScore } = pickBestFromPricePerKgPool(
-    scored,
-    keyword,
-    listItem
-  );
+  const { product: best, score: bestScore } = pickBestFromPricePerKgPool(scored, keyword, listItem);
 
   let threshold =
     isProduceSearchIntent(keyword, listItem) ||
@@ -5445,9 +5377,7 @@ function buildStoreOptionsForKeyword(products, keyword, listItem = {}) {
 
   scored.sort((a, b) => {
     if (Math.abs(b.score - a.score) > 0.02) return b.score - a.score;
-    return (
-      getProductComparablePricePerKg(a.product) - getProductComparablePricePerKg(b.product)
-    );
+    return getProductComparablePricePerKg(a.product) - getProductComparablePricePerKg(b.product);
   });
 
   return scored.map((entry) => entry.product);
@@ -5536,12 +5466,7 @@ function scoreSmartMatchPair(woolProduct, colesProduct, opts = {}) {
 
   if (!woolNorm || !colesNorm) return reject('empty product name');
 
-  const guardrailReason = evaluatePairingGuardrails(
-    woolName,
-    woolProduct,
-    colesName,
-    colesProduct
-  );
+  const guardrailReason = evaluatePairingGuardrails(woolName, woolProduct, colesName, colesProduct);
   if (guardrailReason) return reject(guardrailReason);
 
   if (!areProductCategoriesCompatible(woolProduct, colesProduct)) {
@@ -5677,10 +5602,7 @@ function buildSmartComparePairs(woolworthsOptions, colesOptions) {
       if (score < SMART_MATCH_MIN_PAIR_SCORE) return;
 
       const ppkg = getProductComparablePricePerKg(colesItem);
-      if (
-        score > bestScore ||
-        (score === bestScore && ppkg < bestPricePerKg)
-      ) {
+      if (score > bestScore || (score === bestScore && ppkg < bestPricePerKg)) {
         bestScore = score;
         bestIdx = idx;
         bestPricePerKg = ppkg;
@@ -5797,8 +5719,7 @@ function buildAlignedCompareMatrix(keyword, listItem, woolItems, colesItems) {
   }
 
   const similarPairCount = pairs.length;
-  const totalPossible =
-    woolworthsOptions.length + colesOptions.length - similarPairCount;
+  const totalPossible = woolworthsOptions.length + colesOptions.length - similarPairCount;
 
   return {
     keyword: kw,
@@ -5960,13 +5881,7 @@ function pickPackageFallbackFromProducts(products, listItem) {
     const shelf = product.packShelfPrice ?? product.price;
     if (shelf == null || shelf <= 0) continue;
 
-    const score = scoreProductForKeyword(
-      product.name,
-      keyword,
-      '',
-      listItem,
-      product
-    );
+    const score = scoreProductForKeyword(product.name, keyword, '', listItem, product);
     if (score < 0.18) continue;
 
     let estimatedTotal = null;
@@ -6279,18 +6194,16 @@ function inferIsFreshProduceFromLine(row, originalText, cleanQuery) {
 
 /** Map OpenAI / fallback row → internal list item (qty derived from original_text). */
 function normalizeParsedLineItem(row, fallbackOriginal = '') {
-  const original_text = String(
-    row.original_text || row.text || fallbackOriginal || ''
-  ).trim();
-  let clean_query = String(
-    row.clean_query || row.keyword || row.item || row.name || ''
-  )
+  const original_text = String(row.original_text || row.text || fallbackOriginal || '').trim();
+  let clean_query = String(row.clean_query || row.keyword || row.item || row.name || '')
     .trim()
     .replace(/^fresh\s+/i, '')
     .trim();
 
   if (!clean_query && original_text) {
-    clean_query = stripWeightFromText(original_text).replace(/^fresh\s+/i, '').trim();
+    clean_query = stripWeightFromText(original_text)
+      .replace(/^fresh\s+/i, '')
+      .trim();
   }
   clean_query = clean_query.replace(/\bnaval\s+oranges?\b/i, (match) =>
     /oranges$/i.test(match) ? 'navel oranges' : 'navel orange'
@@ -6298,9 +6211,7 @@ function normalizeParsedLineItem(row, fallbackOriginal = '') {
   if (!clean_query && !original_text) return null;
 
   const is_fresh_produce = inferIsFreshProduceFromLine(row, original_text, clean_query);
-  const category = String(
-    row.category || (is_fresh_produce ? 'Fruit & Veg' : 'Grocery')
-  ).trim();
+  const category = String(row.category || (is_fresh_produce ? 'Fruit & Veg' : 'Grocery')).trim();
   const qty = parseQuantityUnitFromOriginalText(original_text);
 
   return {
@@ -6317,9 +6228,7 @@ function normalizeParsedLineItem(row, fallbackOriginal = '') {
 /** Gọi OpenAI — chỉ parse, không chọn sản phẩm */
 async function parseShoppingListWithAI(promptText) {
   if (!openaiClient) {
-    throw new Error(
-      'OPENAI_API_KEY is not configured. Add it to .env to use AI list analysis.'
-    );
+    throw new Error('OPENAI_API_KEY is not configured. Add it to .env to use AI list analysis.');
   }
 
   const completion = await openaiClient.chat.completions.create({
@@ -6332,16 +6241,17 @@ async function parseShoppingListWithAI(promptText) {
   });
 
   const raw = completion.choices?.[0]?.message?.content?.trim() || '';
-  const jsonText = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '');
+  const jsonText = raw
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '');
   const parsed = JSON.parse(jsonText);
 
   if (!Array.isArray(parsed)) {
     throw new Error('AI did not return a JSON array.');
   }
 
-  return parsed
-    .map((row) => normalizeParsedLineItem(row))
-    .filter(Boolean);
+  return parsed.map((row) => normalizeParsedLineItem(row)).filter(Boolean);
 }
 
 /** Dự phòng khi không có OpenAI: regex tách từng dòng */
@@ -6351,9 +6261,7 @@ function parseShoppingListFallback(promptText) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  return segments
-    .map((part) => normalizeParsedLineItem({}, part))
-    .filter(Boolean);
+  return segments.map((part) => normalizeParsedLineItem({}, part)).filter(Boolean);
 }
 
 /** Pick the cheapest store for one cart line (PRICE_EPSILON tie → lowest wins). */
@@ -6590,10 +6498,10 @@ function buildCartRecommendationMessage(bestPick, totals) {
     { store: 'Woolworths', total: woolworthsOnlyTotal },
   ].filter((row) => row.total > 0);
 
-  const maxSingle = singleStoreBaselines.reduce(
-    (max, row) => (row.total > max.total ? row : max),
-    { store: null, total: 0 }
-  );
+  const maxSingle = singleStoreBaselines.reduce((max, row) => (row.total > max.total ? row : max), {
+    store: null,
+    total: 0,
+  });
 
   const savingsBlock = (baselineTotal, label) => {
     if (baselineTotal <= 0 || bestPick.total >= baselineTotal) {
@@ -6606,8 +6514,7 @@ function buildCartRecommendationMessage(bestPick, totals) {
 
   if (bestPick.strategy === 'split') {
     const amount = Number(Math.max(0, maxSingle.total - splitTotal).toFixed(2));
-    const percent =
-      maxSingle.total > 0 ? Number(((amount / maxSingle.total) * 100).toFixed(1)) : 0;
+    const percent = maxSingle.total > 0 ? Number(((amount / maxSingle.total) * 100).toFixed(1)) : 0;
 
     return {
       message:
@@ -6679,8 +6586,7 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
     });
 
     const pairThreshold =
-      bestIndex >= 0 &&
-      freshFoodCorePhraseMatch(woolItem.name, colesItems[bestIndex].name)
+      bestIndex >= 0 && freshFoodCorePhraseMatch(woolItem.name, colesItems[bestIndex].name)
         ? FRESH_PAIR_SCORE_FLOOR - 0.02
         : SIMILARITY_THRESHOLD;
 
@@ -6688,10 +6594,7 @@ function buildSimilarPairs(woolworthsItems, colesItems) {
 
     usedColesIndexes.add(bestIndex);
     const colesItem = colesItems[bestIndex];
-    const { cheaper, saving, compareBasis } = compareProductsForCheaper(
-      woolItem,
-      colesItem
-    );
+    const { cheaper, saving, compareBasis } = compareProductsForCheaper(woolItem, colesItem);
 
     pairs.push({
       woolworths: woolItem,
@@ -6761,8 +6664,7 @@ function extractNearestStoreFromPayload(payload) {
 
 function extractColesStoreFromXml(xml) {
   const text = String(xml || '');
-  const locationBlock =
-    text.match(/<Location[^>]*>[\s\S]*?<\/Location>/i)?.[0] || text;
+  const locationBlock = text.match(/<Location[^>]*>[\s\S]*?<\/Location>/i)?.[0] || text;
   const storeNo =
     locationBlock.match(/<StoreNo[^>]*>(\d+)<\/StoreNo>/i)?.[1] ||
     text.match(/<StoreNo[^>]*>(\d+)<\/StoreNo>/i)?.[1] ||
@@ -6778,8 +6680,7 @@ function extractColesStoreFromXml(xml) {
 /** Woolworths storelocator returns XML (not JSON) — parse first <storeDetail> block. */
 function extractWoolworthsStoreFromXml(xml) {
   const text = String(xml || '');
-  const storeBlock =
-    text.match(/<storeDetail[^>]*>[\s\S]*?<\/storeDetail>/i)?.[0] || text;
+  const storeBlock = text.match(/<storeDetail[^>]*>[\s\S]*?<\/storeDetail>/i)?.[0] || text;
   const storeNo =
     storeBlock.match(/<no[^>]*>(\d+)<\/no>/i)?.[1] ||
     text.match(/<no[^>]*>(\d+)<\/no>/i)?.[1] ||
@@ -6820,8 +6721,7 @@ function buildNearestStoresPayload(entry = {}) {
 
   return {
     coles: colesId || colesLabel ? { id: colesId, name: colesName, label: colesLabel } : null,
-    woolworths:
-      woolId || woolLabel ? { id: woolId, name: woolName, label: woolLabel } : null,
+    woolworths: woolId || woolLabel ? { id: woolId, name: woolName, label: woolLabel } : null,
   };
 }
 
@@ -7104,11 +7004,7 @@ function extractColesMobileApiPrice(result) {
       if (price != null) return price;
     }
   }
-  return (
-    parsePrice(result?.Price) ??
-    parsePrice(result?.price) ??
-    parsePrice(result?.CurrentPrice)
-  );
+  return parsePrice(result?.Price) ?? parsePrice(result?.price) ?? parsePrice(result?.CurrentPrice);
 }
 
 /** Map Coles mobile search API result → raw list item. */
@@ -7116,12 +7012,7 @@ function mapColesMobileResultToRaw(result) {
   const price = extractColesMobileApiPrice(result);
   if (price == null) return null;
 
-  const slug =
-    result?.SeoToken ||
-    result?.UrlSlug ||
-    result?.Slug ||
-    result?.slug ||
-    null;
+  const slug = result?.SeoToken || result?.UrlSlug || result?.Slug || result?.slug || null;
   const barcodeDigits = normalizeBarcode(
     result?.Barcode ?? result?.Ean ?? result?.Gtin ?? result?.Apn
   );
@@ -7135,11 +7026,7 @@ function mapColesMobileResultToRaw(result) {
     barcode: barcodeDigits || null,
     barcodes: barcodeDigits ? [barcodeDigits] : [],
     image:
-      result?.ImageUrl ||
-      result?.imageUrl ||
-      result?.ThumbnailUrl ||
-      result?.Images?.[0] ||
-      null,
+      result?.ImageUrl || result?.imageUrl || result?.ThumbnailUrl || result?.Images?.[0] || null,
     is_on_special: Array.isArray(result?.Promotions) && result.Promotions.length > 0,
   };
 }
@@ -7148,6 +7035,7 @@ function mapColesMobileResultToRaw(result) {
 async function fetchColesDirectApiRawList(query, storeId, limit = RESULT_LIMIT) {
   const q = String(query || '').trim();
   if (!q) return null;
+  if (!COLES_MOBILE_API_KEY || !COLES_MOBILE_API_SECRET) return null;
 
   try {
     const response = await axios.get(COLES_MOBILE_SEARCH_URL, {
@@ -7177,7 +7065,10 @@ async function fetchColesDirectApiRawList(query, storeId, limit = RESULT_LIMIT) 
     }
     return rawList;
   } catch (error) {
-    console.warn('  ⚠ Coles direct API fallback failed:', error?.response?.status || error?.message);
+    console.warn(
+      '  ⚠ Coles direct API fallback failed:',
+      error?.response?.status || error?.message
+    );
     return null;
   }
 }
@@ -7210,9 +7101,7 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
   const apiTimeout = fast ? COMPARE_API_TIMEOUT_MS : API_TIMEOUT_MS;
   const maxRetries = fast ? COMPARE_API_MAX_RETRIES : API_MAX_RETRIES;
 
-  const cached = opts.forceRefresh
-    ? null
-    : await tryReadApiCache(supermarket, query, location);
+  const cached = opts.forceRefresh ? null : await tryReadApiCache(supermarket, query, location);
   if (cached != null) {
     console.log(`  💾 ${supermarket} cache hit: "${query}" @ ${buildLocationSegment(location)}`);
     return cached;
@@ -7288,7 +7177,9 @@ async function fetchStoreRawList(supermarket, keyword, opts = {}) {
         const direct = await fetchWoolworthsDirectApiRawList(query, RESULT_LIMIT);
         if (direct?.length) {
           const refreshed = refreshWoolworthsUrlsInRawList(direct);
-          console.log(`  ↩ Woolworths direct API fallback: ${refreshed.length} items for "${query}"`);
+          console.log(
+            `  ↩ Woolworths direct API fallback: ${refreshed.length} items for "${query}"`
+          );
           scheduleWriteApiCache(supermarket, query, refreshed, location);
           return refreshed;
         }
@@ -7523,11 +7414,7 @@ app.get('/api/compare', async (req, res) => {
 
   for (const block of perKeyword) {
     colesItems = mergeProductLists(colesItems, block.colesItems, RESULT_LIMIT * 3);
-    woolworthsItems = mergeProductLists(
-      woolworthsItems,
-      block.woolworthsItems,
-      RESULT_LIMIT * 3
-    );
+    woolworthsItems = mergeProductLists(woolworthsItems, block.woolworthsItems, RESULT_LIMIT * 3);
 
     if (block.colesError) colesError = block.colesError;
     if (block.woolworthsError) woolworthsError = block.woolworthsError;
@@ -7563,9 +7450,7 @@ app.get('/api/compare', async (req, res) => {
     });
   }
 
-  const combined = [...colesItems, ...woolworthsItems].sort(
-    (a, b) => a.price - b.price
-  );
+  const combined = [...colesItems, ...woolworthsItems].sort((a, b) => a.price - b.price);
   const similarPairs = alignedRows.flatMap((block) =>
     (block.matrixRows || [])
       .filter((row) => row.woolworths && row.coles)
@@ -7863,9 +7748,7 @@ function findWatchlistProduct(products, watchEntry) {
     if (byUrl) return byUrl;
   }
 
-  const exact = products.find(
-    (p) => normalizeNameForMatch(p.name) === targetNorm
-  );
+  const exact = products.find((p) => normalizeNameForMatch(p.name) === targetNorm);
   if (exact) return exact;
 
   const keyword = watchEntry.searchKeyword || deriveSearchKeyword(watchEntry.name);
@@ -7884,10 +7767,8 @@ async function refreshSingleWatchItem(entry) {
       fetchWoolworths(keyword),
     ]);
 
-    const colesProducts =
-      colesSettled.status === 'fulfilled' ? colesSettled.value : [];
-    const woolProducts =
-      woolSettled.status === 'fulfilled' ? woolSettled.value : [];
+    const colesProducts = colesSettled.status === 'fulfilled' ? colesSettled.value : [];
+    const woolProducts = woolSettled.status === 'fulfilled' ? woolSettled.value : [];
 
     const colesMatch = findWatchlistProduct(colesProducts, entry);
     const woolMatch = findWatchlistProduct(woolProducts, entry);

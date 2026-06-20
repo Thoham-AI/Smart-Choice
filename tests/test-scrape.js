@@ -13,10 +13,10 @@ puppeteer.use(StealthPlugin());
   );
 
   console.log('WW...');
-  await page.goto(
-    'https://www.woolworths.com.au/shop/search/products?searchTerm=milk',
-    { waitUntil: 'domcontentloaded', timeout: 60000 }
-  );
+  await page.goto('https://www.woolworths.com.au/shop/search/products?searchTerm=milk', {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000,
+  });
   await new Promise((r) => setTimeout(r, 8000));
   const ww = await page.evaluate(() => {
     const selectors = [

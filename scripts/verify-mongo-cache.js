@@ -48,7 +48,9 @@ async function main() {
 
   if (!recent.length) {
     console.log('\n⚠️  Chưa có bản ghi cache nào.');
-    console.log('   → Tìm kiếm lần đầu (có RAPIDAPI_KEY) sẽ ghi vào api_cache qua scheduleWriteApiCache().');
+    console.log(
+      '   → Tìm kiếm lần đầu (có RAPIDAPI_KEY) sẽ ghi vào api_cache qua scheduleWriteApiCache().'
+    );
     console.log('   → Tìm kiếm lại cùng keyword + vị trí sẽ đọc từ MongoDB qua tryReadApiCache().');
   } else {
     console.log('\n📋 5 bản ghi cache mới nhất:');
@@ -61,12 +63,12 @@ async function main() {
   }
 
   const byStore = await col
-    .aggregate([
-      { $group: { _id: '$supermarket', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-    ])
+    .aggregate([{ $group: { _id: '$supermarket', count: { $sum: 1 } } }, { $sort: { count: -1 } }])
     .toArray();
-  console.log('\n📊 Theo siêu thị:', byStore.map((r) => `${r._id}: ${r.count}`).join(', ') || '(trống)');
+  console.log(
+    '\n📊 Theo siêu thị:',
+    byStore.map((r) => `${r._id}: ${r.count}`).join(', ') || '(trống)'
+  );
 
   process.exit(0);
 }
